@@ -18,58 +18,58 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '\n%s\n' "$*"; }
 run() { printf '+'; printf ' %q' "$@"; printf '\n'; "$@"; }
 pm() { podman --remote=false "$@"; }
-trap 'printf "ERROR: operación interrumpida en línea %s; no se elimina ningún contenedor.\n" "$LINENO" >&2' ERR
+trap 'printf "ERROR: operation failed at line %s; no container was removed.\n" "$LINENO" >&2' ERR
 
 help_text() {
     cat <<'EOF'
-Uso: ./kali.sh COMANDO
-  inspect              Inspección sin instalar ni crear contenedores
-  setup                Crear/reutilizar kali e instalar solo el mínimo
-  validate             Comprobar seguridad, HTTPS y persistencia; reinicia kali
-  start | stop         Iniciar o detener kali
-  shell                Entrar a Bash; salir no elimina ni detiene kali
-  status | logs        Estado reducido o últimos 100 registros del proceso principal
-  inventory            Guardar versiones instaladas en .state/packages.tsv
-  plan [PERFIL]        Actualizar índices y estimar SIN instalar (default: cli)
-  install PERFIL       Instalar explícitamente un perfil, comprobando el espacio
-  remove               Eliminar solo kali detenido, con confirmación interactiva
-  help                 Esta ayuda
+Usage: ./kali.sh COMMAND
+  inspect              Inspect the host without installing or creating containers
+  setup                Create/reuse kali and install Minimum only
+  install everything-full  Add Everything (including APT recommendations) to existing kali
+  validate             Check security, HTTPS and persistence; restarts kali
+  start | stop         Start or stop kali
+  shell                Enter Bash; exiting does not stop or remove kali
+  status | logs        Show status or the last 100 main-process log entries
+  inventory            Save installed versions to .state/packages.tsv
+  plan [PROFILE]      Refresh APT indexes and estimate WITHOUT installing (default: cli)
+  install PROFILE      Install an explicitly selected profile after checking disk space
+  remove               Remove a stopped kali after interactive confirmation
+  help                 Show this help
 
-Perfiles de plan: cli, headless, everything, everything-full.
-everything-full incluye recomendaciones APT. Ninguno se instala automáticamente.
-setup instala el mínimo; install instala el perfil solicitado.
-No se instala Podman ni se modifica la configuración de Fedora automáticamente.
+Profiles: cli, headless, everything (no APT recommendations), everything-full
+(with recommendations). setup installs only Minimum; install adds tools without
+recreating kali. Podman and other Fedora packages are never installed automatically.
 EOF
 }
 
 prerequisites() {
-    (( EUID != 0 )) || die 'Ejecuta como usuario normal, sin sudo.'
+    (( EUID != 0 )) || die 'Run as your regular user, without sudo.'
     local bin
     for bin in python3 podman realpath stat getenforce; do
-        command -v "$bin" >/dev/null || die "Falta $bin. Consulta los requisitos del README."
+        command -v "$bin" >/dev/null || die "Missing $bin. See the README requirements."
     done
-    [[ -r /etc/os-release ]] || die 'No se encuentra /etc/os-release.'
-    [[ $(python3 -c 'import platform; d=platform.freedesktop_os_release(); print(d.get("ID"),d.get("VERSION_ID"))') == 'fedora 44' ]] || die 'Este script requiere Fedora 44.'
-    [[ "$ROOT" != *:* && "$ROOT" != *$'\n'* && "$ROOT" != *$'\r'* ]] || die 'La ruta del proyecto contiene caracteres incompatibles con los volúmenes.'
+    [[ -r /etc/os-release ]] || die 'Cannot read /etc/os-release.'
+    [[ $(python3 -c 'import platform; d=platform.freedesktop_os_release(); print(d.get("ID"),d.get("VERSION_ID"))') == 'fedora 44' ]] || die 'This script requires Fedora 44.'
+    [[ "$ROOT" != *:* && "$ROOT" != *$'\n'* && "$ROOT" != *$'\r'* ]] || die 'The project path contains characters incompatible with volume mounts.'
     local var
     for var in CONTAINER_HOST CONTAINER_CONNECTION CONTAINERS_CONF CONTAINERS_STORAGE_CONF CONTAINERS_REGISTRIES_CONF PODMAN_USERNS; do
-        [[ -z ${!var:-} ]] || die "La variable $var puede cambiar el entorno; revísala antes de continuar."
+        [[ -z ${!var:-} ]] || die "Environment variable $var may override the container environment; review it before continuing."
     done
     pm info --format json | python3 -c '
 import json,sys
 s=json.load(sys.stdin)["host"]["security"]
 if not all(s.get(k) is True for k in ("rootless","seccompEnabled","selinuxEnabled")):
- sys.exit("Se requiere Podman local rootless, seccomp y soporte SELinux habilitados.")
+  sys.exit("Local rootless Podman with seccomp and SELinux support is required.")
 '
-    [[ $(getenforce) == Enforcing ]] || die 'Se requiere SELinux Enforcing; el script no cambia su configuración.'
+    [[ $(getenforce) == Enforcing ]] || die 'SELinux Enforcing is required; this script does not change its configuration.'
 }
 
 private_dir() {
     local path=$1
-    [[ ! -L "$path" ]] || die 'Se rechaza un directorio de trabajo que sea enlace simbólico.'
+    [[ ! -L "$path" ]] || die 'A working directory cannot be a symbolic link.'
     if [[ -e "$path" ]]; then
         [[ -d "$path" && $(stat -c %u "$path") == "$EUID" && $(stat -c %a "$path") == 700 ]] ||
-            die 'El directorio existente debe pertenecer al usuario y tener modo 0700; no se cambian sus permisos automáticamente.'
+            die 'The existing directory must belong to this user and have mode 0700; permissions are not changed automatically.'
     else
         mkdir -m 700 -- "$path"
     fi
@@ -78,7 +78,7 @@ private_dir() {
 container_exists() {
     local rc=0
     pm container exists "$NAME" || rc=$?
-    case $rc in 0) return 0;; 1) return 1;; *) die 'No se pudo consultar si existe kali.';; esac
+    case $rc in 0) return 0;; 1) return 1;; *) die 'Could not check whether kali exists.';; esac
 }
 
 space() {
@@ -94,50 +94,50 @@ print(u.free)
 check_space() {
     local needed=${1:-0} free
     free=$(space)
-    python3 -c 'import sys; f,n,r=map(int,sys.argv[1:]); print(f"Libre en almacenamiento Podman: {f/2**30:.2f} GiB; reserva Fedora: {r/2**30:.0f} GiB; presupuesto adicional: {n/2**30:.2f} GiB"); sys.exit(0 if f-n>=r else 1)' "$free" "$needed" "$RESERVE" ||
-        die 'No queda la reserva de 20 GiB después del presupuesto estimado.'
+    python3 -c 'import sys; f,n,r=map(int,sys.argv[1:]); print(f"Free in Podman storage: {f/2**30:.2f} GiB; required remaining space: {r/2**30:.0f} GiB; estimated additional space: {n/2**30:.2f} GiB"); sys.exit(0 if f-n>=r else 1)' "$free" "$needed" "$RESERVE" ||
+        die 'Not enough free space to keep 20 GiB after the estimated installation.'
 }
 
 inspect_host() {
-    note 'Etapa 1: inspección (no instala paquetes ni crea contenedores)'
+    note 'Host inspection (does not install packages or create containers)'
     python3 - <<'PY'
 import os, pathlib, platform, pwd, shutil, subprocess
 d=dict(l.split('=',1) for l in pathlib.Path('/etc/os-release').read_text().splitlines() if '=' in l)
-print('Sistema:', d.get('PRETTY_NAME','').strip('"')); print('Kernel:',platform.release()); print('Arquitectura:',platform.machine())
-print('Usuario sin privilegios:', os.geteuid()!=0)
-u=shutil.disk_usage('.');print(f'Disco del proyecto: {u.free/2**30:.2f} GiB libres')
+print('System:', d.get('PRETTY_NAME','').strip('"')); print('Kernel:',platform.release()); print('Architecture:',platform.machine())
+print('Unprivileged user:', os.geteuid()!=0)
+u=shutil.disk_usage('.');print(f'Project filesystem: {u.free/2**30:.2f} GiB free')
 user=pwd.getpwuid(os.getuid()).pw_name
 for name in ('subuid','subgid'):
- try:
-  found=any(l.split(':')[0] in (user,str(os.getuid())) and int(l.strip().split(':')[2])>=65536 for l in pathlib.Path('/etc/'+name).read_text().splitlines())
-  print(name+': rango de al menos 65536 IDs:',found)
- except (OSError,ValueError,IndexError): print(name+': no verificable')
+  try:
+   found=any(l.split(':')[0] in (user,str(os.getuid())) and int(l.strip().split(':')[2])>=65536 for l in pathlib.Path('/etc/'+name).read_text().splitlines())
+   print(name+': range of at least 65536 IDs:',found)
+  except (OSError,ValueError,IndexError): print(name+': could not verify')
 for args in (['podman','--version'],['getenforce'],['systemctl','is-active','firewalld']):
  if shutil.which(args[0]):
-  r=subprocess.run(args,capture_output=True,text=True); print(' '.join(args)+':',r.stdout.strip() or 'no verificable', '(exit='+str(r.returncode)+')')
+   r=subprocess.run(args,capture_output=True,text=True); print(' '.join(args)+':',r.stdout.strip() or 'could not verify', '(exit='+str(r.returncode)+')')
 for key in ('CONTAINER_HOST','CONTAINER_CONNECTION','CONTAINERS_CONF','CONTAINERS_STORAGE_CONF','CONTAINERS_REGISTRIES_CONF','PODMAN_USERNS'):
- if os.environ.get(key): print('Override a revisar (valor omitido):',key)
+ if os.environ.get(key): print('Environment override to review (value hidden):',key)
 for base in (pathlib.Path('/etc/containers'),pathlib.Path.home()/'.config/containers'):
  for name in ('containers.conf','storage.conf','registries.conf','mounts.conf'):
-  print(('Sistema' if str(base).startswith('/etc') else 'Usuario')+'/'+name+':', (base/name).exists())
+   print(('System' if str(base).startswith('/etc') else 'User')+'/'+name+':', (base/name).exists())
 PY
     if command -v podman >/dev/null; then
         pm info --format json | python3 -c '
 import json,sys
 d=json.load(sys.stdin); h=d["host"]; s=d["store"]
-print("Podman:", {"rootless": h["security"]["rootless"], "SELinux": h["security"]["selinuxEnabled"], "seccomp":h["security"]["seccompEnabled"], "red":h["networkBackend"], "red_rootless":h.get("rootlessNetworkCmd"), "storage":s["graphDriverName"]})
+print("Podman:", {"rootless": h["security"]["rootless"], "SELinux": h["security"]["selinuxEnabled"], "seccomp":h["security"]["seccompEnabled"], "network":h["networkBackend"], "rootless_network":h.get("rootlessNetworkCmd"), "storage":s["graphDriverName"]})
 '
         if container_exists; then
             pm inspect "$NAME" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)[0];h=d["HostConfig"]
-print("kali existe; no se sobrescribe:", {"estado":d["State"]["Status"],"imagen":d.get("ImageName"),"privileged":h.get("Privileged"),"red":h.get("NetworkMode"),"montajes":len(d.get("Mounts",[])),"publicaciones":len(h.get("PortBindings") or {})})
+print("kali already exists; it will not be overwritten:", {"status":d["State"]["Status"],"image":d.get("ImageName"),"privileged":h.get("Privileged"),"network":h.get("NetworkMode"),"mounts":len(d.get("Mounts",[])),"published_ports":len(h.get("PortBindings") or {})})
 '
         else
-            printf 'No existe un contenedor llamado kali.\n'
+            printf 'No container named kali exists.\n'
         fi
     else
-        printf 'Podman no instalado. Propuesta manual: sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs\n'
+        printf 'Podman is not installed. Manual host setup: sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs python3 util-linux libselinux-utils coreutils git\n'
     fi
 }
 
@@ -148,29 +148,29 @@ d=json.load(sys.stdin)[0];h=d["HostConfig"];c=d["Config"]; lab=sys.argv[1]
 mounts=d.get("Mounts",[]); allowed={"CAP_CHOWN","CAP_DAC_OVERRIDE","CAP_FOWNER","CAP_FSETID","CAP_SETGID","CAP_SETUID","CAP_SETFCAP","CAP_SYS_CHROOT"}
 caps=set(d.get("EffectiveCaps",[]))
 checks={
- "propiedad_proyecto":c.get("Labels",{}).get("io.github.kali-in-fedora.managed")=="1",
- "imagen_oficial":d.get("ImageName", "").startswith("docker.io/kalilinux/kali-rolling@sha256:"),
- "sin_privileged":h.get("Privileged") is False,
- "persistente":h.get("AutoRemove") is False,
- "red_pasta":h.get("NetworkMode","").split(":")[0]=="pasta",
- "sin_puertos":not h.get("PortBindings"),
- "sin_dispositivos_extra":not h.get("Devices") and not h.get("DeviceRequests"),
- "PID_privado":h.get("PidMode") not in ("host",),
- "IPC_privado":h.get("IpcMode") not in ("host",),
- "no_new_privileges":"no-new-privileges" in h.get("SecurityOpt",[]),
- "capacidades_limitadas":bool(caps) and caps<=allowed,
- "solo_lab":len(mounts)==1 and mounts[0].get("Type")=="bind" and mounts[0].get("Source")==lab and mounts[0].get("Destination")=="/lab" and mounts[0].get("RW") is True,
- "sin_desactivar_SELinux":not any(x.startswith("label=disable") or x.startswith("label:disable") for x in h.get("SecurityOpt",[])),
- "sin_desactivar_seccomp":not any("seccomp=unconfined" in x or "seccomp:unconfined" in x for x in h.get("SecurityOpt",[])),
- "lab_privado":not os.path.islink(lab) and os.stat(lab).st_uid==os.getuid() and os.stat(lab).st_mode & 0o777==0o700,
+  "managed_by_project":c.get("Labels",{}).get("io.github.kali-in-fedora.managed")=="1",
+  "official_image":d.get("ImageName", "").startswith("docker.io/kalilinux/kali-rolling@sha256:"),
+  "not_privileged":h.get("Privileged") is False,
+  "persistent":h.get("AutoRemove") is False,
+  "pasta_network":h.get("NetworkMode","").split(":")[0]=="pasta",
+  "no_published_ports":not h.get("PortBindings"),
+  "no_extra_devices":not h.get("Devices") and not h.get("DeviceRequests"),
+  "private_PID":h.get("PidMode") not in ("host",),
+  "private_IPC":h.get("IpcMode") not in ("host",),
+  "no_new_privileges":"no-new-privileges" in h.get("SecurityOpt",[]),
+  "limited_capabilities":bool(caps) and caps<=allowed,
+  "only_lab_mounted":len(mounts)==1 and mounts[0].get("Type")=="bind" and mounts[0].get("Source")==lab and mounts[0].get("Destination")=="/lab" and mounts[0].get("RW") is True,
+  "SELinux_enabled":not any(x.startswith("label=disable") or x.startswith("label:disable") for x in h.get("SecurityOpt",[])),
+  "seccomp_enabled":not any("seccomp=unconfined" in x or "seccomp:unconfined" in x for x in h.get("SecurityOpt",[])),
+  "private_lab":not os.path.islink(lab) and os.stat(lab).st_uid==os.getuid() and os.stat(lab).st_mode & 0o777==0o700,
 }
-for k,v in checks.items(): print(("OK " if v else "FALLO ")+k)
-if not all(checks.values()): sys.exit("Contenedor incompatible: no se reutiliza ni modifica.")
+for k,v in checks.items(): print(("OK " if v else "FAIL ")+k)
+if not all(checks.values()): sys.exit("Incompatible container: it will not be reused or modified.")
 ' "$LAB"
 }
 
 require_managed() {
-    container_exists || die 'No existe kali. Ejecuta primero ./kali.sh setup.'
+    container_exists || die 'No kali container exists. Run ./kali.sh setup first.'
     audit
 }
 
@@ -182,17 +182,17 @@ start_container() {
 
 prepare_image() {
     if [[ -e "$LOCK" || -L "$LOCK" ]]; then
-        [[ -f "$LOCK" && ! -L "$LOCK" ]] || die 'image.lock debe ser un archivo regular.'
+        [[ -f "$LOCK" && ! -L "$LOCK" ]] || die 'image.lock must be a regular file.'
         IMAGE=$(cat -- "$LOCK")
-        [[ "$IMAGE" =~ ^docker\.io/kalilinux/kali-rolling@sha256:[a-f0-9]{64}$ ]] || die 'image.lock no contiene un digest oficial válido.'
+        [[ "$IMAGE" =~ ^docker\.io/kalilinux/kali-rolling@sha256:[a-f0-9]{64}$ ]] || die 'image.lock does not contain a valid official image digest.'
         run pm pull --policy=missing "$IMAGE"
     else
         run pm pull "$TAG"
         IMAGE=$(pm image inspect "$TAG" --format '{{index .RepoDigests 0}}')
-        [[ "$IMAGE" =~ ^docker\.io/kalilinux/kali-rolling@sha256:[a-f0-9]{64}$ ]] || die 'No se obtuvo un digest de la imagen oficial.'
+        [[ "$IMAGE" =~ ^docker\.io/kalilinux/kali-rolling@sha256:[a-f0-9]{64}$ ]] || die 'Could not obtain an official image digest.'
         (set -C; printf '%s\n' "$IMAGE" > "$LOCK")
     fi
-    printf 'Base fijada: %s\n' "$IMAGE"
+    printf 'Pinned base image: %s\n' "$IMAGE"
 }
 
 apt_update() {
@@ -211,39 +211,39 @@ apt_plan() {
     fi
     pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --assume-no --no-remove "$recommend_flag" install "$@" > "$raw" 2>&1 || rc=$?
-    [[ $rc == 0 || $rc == 1 ]] || { cat -- "$raw"; die 'APT no pudo resolver este perfil; no se instala nada.'; }
+    [[ $rc == 0 || $rc == 1 ]] || { cat -- "$raw"; die 'APT could not resolve this profile; nothing was installed.'; }
     python3 -c '
 import json,pathlib,re,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 def amount(s):
- s=s.replace(",","");m=re.fullmatch(r"([0-9.]+)\s*([kMGT]?B)",s.strip())
- if not m: raise ValueError("Tamaño APT no reconocido: "+s)
- return int(float(m[1])*{"B":1,"kB":10**3,"MB":10**6,"GB":10**9,"TB":10**12}[m[2]])
+  s=s.replace(",","");m=re.fullmatch(r"([0-9.]+)\s*([kMGT]?B)",s.strip())
+  if not m: raise ValueError("Unrecognized APT size: "+s)
+  return int(float(m[1])*{"B":1,"kB":10**3,"MB":10**6,"GB":10**9,"TB":10**12}[m[2]])
 download=re.search(r"Need to get (.+?) of archives",text)
 installed=re.search(r"After this operation, ([0-9.,]+\s*[kMGT]?B) of additional disk space will be used",text)
 unchanged=re.search(r"^0 upgraded, 0 newly installed, 0 to remove",text,re.M) is not None
 if not installed and not unchanged:
- print(text);sys.exit("No se pudo obtener una estimación fiable de APT; se detiene la operación.")
+  print(text);sys.exit("Could not obtain a reliable APT estimate; stopping.")
 d=amount(download[1].split("/")[-1]) if download else 0
 n=amount(installed[1]) if installed else 0
 budget=n+d+2*2**30
 result={"download_bytes":d,"additional_installed_bytes":n,"budget_bytes":budget,"reserve_bytes":20*2**30,"recommends":sys.argv[3]=="true"}
 pathlib.Path(sys.argv[2]).write_text(json.dumps(result,indent=2)+"\n")
-print(f"APT: descarga {d/2**30:.2f} GiB; instalado adicional {n/2**30:.2f} GiB; presupuesto con descarga y margen de 2 GiB: {budget/2**30:.2f} GiB")
+print(f"APT: download {d/2**30:.2f} GiB; additional installed size {n/2**30:.2f} GiB; budget including download and 2 GiB headroom: {budget/2**30:.2f} GiB")
 for l in text.splitlines():
  if "newly installed" in l or "upgraded," in l: print(l)
-print("Dependencias completas en el informe local (no versionado).")
+print("Full dependency list is in the local, untracked plan report.")
 ' "$raw" "$STATE/plan-$profile.json" "$recommends"
 }
 
 inventory() {
     private_dir "$STATE"
     pm exec "$NAME" dpkg-query -W '-f=${binary:Package}\t${Version}\t${Architecture}\n' > "$STATE/packages.tsv"
-    printf 'Inventario local: .state/packages.tsv\n'
+    printf 'Local package inventory: .state/packages.tsv\n'
 }
 
 validate() {
-    note 'Etapa 5: validación no destructiva; detiene y vuelve a iniciar kali'
+    note 'Validating Kali (stops and restarts the container; does not delete files)'
     require_managed
     start_container
     pm exec "$NAME" bash -ceu '
@@ -256,13 +256,13 @@ validate() {
             test "$(dpkg-query -W -f="\${Status}" "$p")" = "install ok installed"
         done
         curl --fail --silent --show-error --location --connect-timeout 15 --max-time 60 --output /dev/null https://www.kali.org/
-        printf "HTTPS externo y resolución DNS: OK\n"
+        printf "External HTTPS and DNS resolution: OK\n"
         ip -brief link show lo
         test -n "$(dig +short www.kali.org A)"
         test "$(id -u)" = 0
         grep -q "^NoNewPrivs:[[:space:]]*1" /proc/self/status
         grep -q "^Seccomp:[[:space:]]*2" /proc/self/status
-        printf "UID 0 interno; seccomp y NoNewPrivs: OK\n"
+        printf "Container UID 0, seccomp and NoNewPrivs: OK\n"
     '
     # Read from the host namespace: inside a nested user namespace the parent
     # mapping may legitimately display 0 -> 0, despite being rootless on Fedora.
@@ -272,30 +272,30 @@ validate() {
 import os,pathlib,sys
 rows=[tuple(map(int,l.split())) for l in (pathlib.Path("/proc")/sys.argv[1]/"uid_map").read_text().splitlines()]
 if not any(inside==0 and outside==os.getuid()!=0 and size>=1 for inside,outside,size in rows):
- sys.exit("El UID 0 del contenedor no está mapeado al usuario Fedora esperado.")
-print("Mapeo verificado desde Fedora: UID 0 interno corresponde al usuario Fedora sin privilegios.")
+  sys.exit("Container UID 0 is not mapped to the expected Fedora user.")
+print("Verified from Fedora: container UID 0 maps to the unprivileged Fedora user.")
 ' "$pid"
     local token inside shared
     token=$(python3 -c 'import secrets;print(secrets.token_hex(16))')
     inside="/var/tmp/kali-in-fedora-$token"
     shared=".persistence-$token"
     pm exec "$NAME" bash -ceu 'umask 077; printf "%s" "$1" > "$2"; printf "%s" "$1" > "/lab/$3"' bash "$token" "$inside" "$shared"
-    [[ $(cat -- "$LAB/$shared") == "$token" && $(stat -c %u "$LAB/$shared") == "$EUID" && $(stat -c %a "$LAB/$shared") == 600 ]] || die 'El intercambio de archivos no conserva permisos y propietario esperados.'
+    [[ $(cat -- "$LAB/$shared") == "$token" && $(stat -c %u "$LAB/$shared") == "$EUID" && $(stat -c %a "$LAB/$shared") == 600 ]] || die 'Shared files do not have the expected owner and permissions.'
     run pm stop --time 10 "$NAME"
     run pm start "$NAME"
     pm exec "$NAME" bash -ceu 'test "$(cat -- "$2")" = "$1"; test "$(cat -- "/lab/$3")" = "$1"; for p in ca-certificates curl iproute2 bind9-dnsutils; do dpkg-query -W "$p"; done' bash "$token" "$inside" "$shared"
     # Only files created by this validation are removed, inside the container.
     pm exec "$NAME" bash -ceu 'test "$(cat -- "$2")" = "$1"; test "$(cat -- "/lab/$3")" = "$1"; unlink -- "$2"; unlink -- "/lab/$3"' bash "$token" "$inside" "$shared"
     inventory
-    note 'Validado: HTTPS/DNS, paquetes, diagnóstico loopback, UID rootless, seccomp, permisos y persistencia tras stop/start.'
-    printf 'No probado: reinicio de Fedora, herramientas amplias, interfaz gráfica, Wi-Fi, GPU ni hardware.\n'
+    note 'Validated: HTTPS/DNS, packages, loopback, rootless UID, seccomp, permissions and persistence across stop/start.'
+    printf 'Not tested: Fedora reboot, all tools, desktop integration, Wi-Fi, GPU or other hardware.\n'
     check_space
 }
 
 setup() {
-    note 'Etapa 2: plan mínimo (ningún metapaquete amplio se instalará)'
-    printf 'Base oficial fijada por digest; kali persistente; solo lab/:Z; pasta; sin puertos; reserva de 20 GiB.\n'
-    note 'Etapa 3: verificar Podman rootless existente'
+    note 'Minimum mode: only four basic Kali packages and their required dependencies; no broad tool metapackage'
+    printf 'Pinned official image; persistent kali; only lab/:Z mounted; pasta network; no published ports; keep 20 GiB free.\n'
+    note 'Checking existing rootless Podman (host packages are not installed automatically)'
     prerequisites
     check_space $((2 * 1024 * 1024 * 1024))
     if container_exists; then
@@ -306,7 +306,7 @@ setup() {
         prepare_image
         local cap args=()
         for cap in "${CAPS[@]}"; do args+=(--cap-add="$cap"); done
-        note 'Etapa 4: crear kali persistente'
+        note 'Creating persistent kali container'
         run pm create --name "$NAME" --label "$LABEL=1" \
             --hostname kali --userns=keep-id:uid=0,gid=0 --user=0:0 \
             --network=pasta:--no-map-gw --pid=private --ipc=private --uts=private --cgroupns=private \
@@ -324,7 +324,7 @@ setup() {
     local budget
     budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-minimum.json")
     check_space "$budget"
-    note 'Etapa 6: instalar únicamente el mínimo'
+    note 'Installing Minimum inside Kali (ca-certificates, curl, iproute2, bind9-dnsutils)'
     run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --yes --no-remove --no-install-recommends install "${MINIMUM[@]}"
     validate
@@ -335,7 +335,7 @@ profile_packages() {
         cli) PACKAGES=(kali-tools-information-gathering kali-tools-web kali-tools-sniffing-spoofing kali-tools-forensics kali-tools-crypto-stego kali-tools-reverse-engineering);;
         headless) PACKAGES=(kali-linux-headless);;
         everything|everything-full) PACKAGES=(kali-linux-everything);;
-        *) die 'Perfil desconocido; usa cli, headless, everything o everything-full.';;
+        *) die 'Unknown profile; use cli, headless, everything or everything-full.';;
     esac
 }
 
@@ -346,20 +346,20 @@ plan() {
     private_dir "$STATE"
     start_container
     apt_update
-    note "Propuesta $profile; NO instala paquetes"
-    printf 'Metapaquetes:'; printf ' %s' "${PACKAGES[@]}"; printf '\n'
+    note "Planning $profile; this does NOT install tools (APT indexes are refreshed)"
+    printf 'Metapackages:'; printf ' %s' "${PACKAGES[@]}"; printf '\n'
     apt_plan "$profile" "${PACKAGES[@]}"
     local budget
     budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-$profile.json")
     check_space "$budget"
-    printf 'Este plan no instala ni garantiza compatibilidad. Para instalar se requiere el comando install explícito.\n'
+    printf 'This plan does not install tools or guarantee compatibility. Run install explicitly to add this profile.\n'
 }
 
 install_tools() {
     local profile=${1:-}
-    [[ -n "$profile" ]] || die 'Indica el perfil explícitamente: install everything-full, everything, headless o cli.'
+    [[ -n "$profile" ]] || die 'Specify a profile: install everything-full, everything, headless or cli.'
     plan "$profile"
-    note "Instalación explícita del perfil $profile"
+    note "Installing $profile inside the existing kali container; this keeps your current packages and files"
     # Prevent package postinst scripts from starting network services by default.
     # The official image already ships policy-rc.d returning 101; never replace it.
     pm exec "$NAME" bash -c '
@@ -369,7 +369,7 @@ install_tools() {
         fi
         /usr/sbin/policy-rc.d kali-in-fedora start >/dev/null 2>&1
         test "$?" -eq 101
-    ' || die 'La política de arranque de servicios no bloquea el inicio automático; revisa antes de instalar.'
+    ' || die 'The service-start policy does not block automatic starts; review it before installing.'
     pm exec -i "$NAME" debconf-set-selections <<'EOF'
 wireshark-common wireshark-common/install-setuid boolean false
 macchanger macchanger/automatically_run boolean false
@@ -390,24 +390,24 @@ EOF
         nmap --version | head -n 1
         for tool in nmap tcpdump tshark sqlmap nikto gobuster ffuf python3 gdb yara; do
             command -v "$tool" >/dev/null
-            printf "Disponible: %s\n" "$tool"
+            printf "Available: %s\n" "$tool"
         done
     '
-    note 'Instalación completada. Los servicios y las herramientas de hardware o GUI requieren preparación específica.'
+    note 'Installation complete. Services, graphical tools and hardware-dependent tools may need separate setup.'
 }
 
 remove_container() {
     require_managed
-    [[ -t 0 ]] || die 'La eliminación exige confirmación en una terminal interactiva.'
-    [[ $(pm inspect --format '{{.State.Status}}' "$NAME") != running ]] || die 'Detén el contenedor antes; revisa y respalda los datos.'
+    [[ -t 0 ]] || die 'Removal requires confirmation in an interactive terminal.'
+    [[ $(pm inspect --format '{{.State.Status}}' "$NAME") != running ]] || die 'Stop the container first; review and back up your data.'
     local cid answer
     cid=$(pm inspect --format '{{.Id}}' "$NAME")
-    note 'Se perderán TODOS los paquetes y archivos de la capa interna, incluidos /root y /var/tmp.'
-    printf 'Se conserva lab/, .state/ y la imagen. Los backups deben realizarse antes.\n'
-    pm diff "$cid" | python3 -c 'import sys;print("Entradas de cambios en la capa interna:",sum(1 for _ in sys.stdin))'
-    printf 'Para confirmar, escribe exactamente ELIMINAR kali %s: ' "$cid"
+    note 'ALL packages and files in the container writable layer will be lost, including /root and /var/tmp.'
+    printf 'lab/, .state/, backups and the image are kept. Back up your data first.\n'
+    pm diff "$cid" | python3 -c 'import sys;print("Changed entries in the container writable layer:",sum(1 for _ in sys.stdin))'
+    printf 'To confirm, type exactly REMOVE kali %s: ' "$cid"
     IFS= read -r answer
-    [[ "$answer" == "ELIMINAR kali $cid" ]] || die 'Confirmación no válida; no se elimina nada.'
+    [[ "$answer" == "REMOVE kali $cid" ]] || die 'Confirmation did not match; nothing was removed.'
     run pm rm "$cid"
 }
 
@@ -419,11 +419,11 @@ esac
 prerequisites
 case "$command" in
     setup|validate|plan|install)
-        command -v flock >/dev/null || die 'Falta flock (util-linux).'
+        command -v flock >/dev/null || die 'Missing flock (util-linux).'
         private_dir "$STATE"
-        [[ ! -L "$STATE/operation.lock" ]] || die 'El lock no puede ser un enlace simbólico.'
+        [[ ! -L "$STATE/operation.lock" ]] || die 'The operation lock cannot be a symbolic link.'
         exec 9>"$STATE/operation.lock"
-        flock -n 9 || die 'Hay otra operación de paquetes o validación en curso.'
+        flock -n 9 || die 'Another package operation or validation is in progress.'
         ;;
 esac
 case "$command" in
@@ -432,11 +432,11 @@ case "$command" in
     start) require_managed; start_container;;
     stop) require_managed; run pm stop --time 10 "$NAME";;
     shell) require_managed; start_container; pm exec -it --workdir /lab "$NAME" bash -c 'umask 077; exec bash -i';;
-    status) require_managed; pm inspect --format 'Estado={{.State.Status}} Imagen={{.ImageName}} ID={{.Id}}' "$NAME"; check_space;;
+    status) require_managed; pm inspect --format 'Status={{.State.Status}} Image={{.ImageName}} ID={{.Id}}' "$NAME"; check_space;;
     logs) require_managed; pm logs --tail 100 "$NAME";;
     inventory) require_managed; start_container; inventory;;
     plan) plan "${2:-cli}";;
     install) install_tools "${2:-}" 2>&1 | tee "$STATE/install-$(date -u +%Y%m%dT%H%M%SZ).log";;
     remove) remove_container;;
-    *) help_text; die 'Comando desconocido.';;
+    *) help_text; die 'Unknown command.';;
 esac

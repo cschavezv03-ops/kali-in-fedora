@@ -1,88 +1,26 @@
-# Validación de Kali Everything
+# Historical Kali Everything validation
 
-Resultados observados en Fedora 44 x86_64 el 28 de octubre de 2026
-(zona America/Guayaquil). Los valores corresponden a este equipo y a sus índices
-Rolling en esa fecha; no garantizan idénticas resoluciones en otra instalación.
-No se versionan perfiles VPN, direcciones privadas, archivos de laboratorio ni
-logs completos.
+These are **example observations**, not minimum requirements, expected results for other users, or a guarantee that every Kali tool works. Recorded on Fedora 44 x86_64 in October 2026 with the Kali Rolling repositories available at the time. No VPN credentials, private addresses, lab files or full logs are included.
 
-## Resultado de la instalación
+## Installation observed
 
-Se instaló en el contenedor persistente `kali` el metapaquete oficial
-`kali-linux-everything` con recomendaciones APT, a partir de la imagen
-`docker.io/kalilinux/kali-rolling@sha256:cd030992fed90891eb7de0e2b1b7b1972ab46fcfaf75d969af0b94304214b6e3`.
+The persistent `kali` container used the official base image pinned in `image.lock` and installed `kali-linux-everything` with APT recommendations (`./kali.sh install everything-full`). The metapackage version was `2026.4.2`; 4,315 packages were installed. The writable container layer was about 37.25 GiB. The preceding plan estimated 4,192 new packages, 12.76 GiB of downloads and 36.23 GiB of additional installed size. The base image was about 239 MiB. These numbers can change considerably with Kali Rolling, architecture, filesystems, snapshots and APT updates. Check your own `plan everything-full` and available storage before installation. The installer requires at least 20 GiB to remain free after its estimated budget.
 
-| Medición | Resultado observado |
-| --- | ---: |
-| Versión del metapaquete | `2026.4.2` |
-| Paquetes con estado instalado (`ii`) | 4.315 |
-| Capa escribible del contenedor | 39.996.255.827 bytes, aproximadamente 37,25 GiB |
-| Imagen base | 250.861.141 bytes, aproximadamente 239 MiB |
-| Tamaño total lógico del rootfs | 40.247.116.968 bytes, aproximadamente 37,49 GiB |
-| Espacio libre informado por Podman | 61,81 GiB |
-| Espacio libre del filesystem del proyecto | 62 GiB (redondeado por `df`) |
-| Reserva mínima requerida por el instalador | 20 GiB |
+Package post-install scripts were prevented from automatically starting services by checking `policy-rc.d`. An installed package does not mean its GUI, service, database, firmware or hardware works without extra setup.
 
-El plan previo para `everything-full` estimó 4.192 paquetes nuevos, 12,76 GiB
-de descarga y 36,23 GiB adicionales. El tamaño real incluye la capa inicial,
-índices y efectos de la instalación; no es una cuota. Los bloques físicos pueden
-diferir por el filesystem/snapshots. El proceso terminó y ya no mantiene el lock
-de APT ni el lock de operaciones.
+## Checks performed
 
-La instalación no activó la mayoría de servicios automáticamente: el script
-comprueba `policy-rc.d` para impedirlo. Tener un paquete instalado no garantiza
-que su servicio, base de datos, GUI, firmware o hardware estén configurados.
-Algunas herramientas pueden necesitar pasos individuales.
+- `dpkg --audit` found no incomplete packages. Kali APT, DNS resolution and HTTPS with TLS verification to `kali.org` worked. `ip -brief link show lo` succeeded.
+- The `kali-linux-everything` metapackage and representative commands including `nmap`, `tcpdump`, `tshark`, `sqlmap`, `nikto`, `gobuster`, `ffuf`, `gdb` and `yara` were present. This is not a test of every tool.
+- Nmap's packaged file capabilities prevented running it under this container's `no-new-privileges` and limited capabilities. Removing only those capabilities from `/usr/lib/nmap/nmap` inside Kali allowed `nmap --unprivileged -sT -Pn -p 1-5 127.0.0.1` to run without raw sockets. The installer performs this adjustment; manually updating Nmap may require `podman exec kali setcap -r /usr/lib/nmap/nmap` again.
+- The container audit passed for the pinned image, rootless mapping, private namespaces, `pasta`, no published ports or extra devices, limited capabilities, SELinux, seccomp, `no-new-privileges`, and the private `lab/` bind mount.
+- Stopping and restarting Kali preserved the metapackage and temporary files in both the container layer and `/lab`; test files were then removed. The test scan targeted only loopback, not an external host.
 
-## Pruebas realizadas
+## Limits
 
-- `kali-linux-everything` y herramientas representativas (`nmap`, `tcpdump`,
-  `tshark`, `sqlmap`, `nikto`, `gobuster`, `ffuf`, `gdb`, `yara`, `python3`)
-  figuran instaladas y sus ejecutables —salvo la excepción descrita abajo— están
-  disponibles en `PATH`.
-- `dpkg --audit` no reportó paquetes incompletos.
-- Kali Rolling y APT respondieron. HTTPS con verificación TLS a `kali.org` y
-  resolución DNS desde Kali funcionaron.
-- `ip -brief link show lo` funcionó.
-- Nmap 7.991 ejecutó `--unprivileged -sT -Pn -p 1-5 127.0.0.1`; el escaneo
-  TCP connect de loopback concluyó sin sockets raw y reportó los cinco puertos
-  cerrados.
-- El paquete de Nmap instala `cap_net_bind_service,cap_net_admin,cap_net_raw=eip`
-  en `/usr/lib/nmap/nmap`. Esa file capability impedía ejecutar el ELF bajo
-  `no-new-privileges` con las capacidades de contenedor reducidas. Se quitaron
-  solo las file capabilities de ese binario dentro de Kali. Nmap volvió a
-  ejecutarse con `--unprivileged`, sin `NET_RAW` ni `NET_ADMIN`. El instalador
-  automatiza esta corrección tras futuras instalaciones del perfil; una
-  actualización manual de Nmap puede requerir repetir
-  `podman exec kali setcap -r /usr/lib/nmap/nmap`.
-- La auditoría del contenedor pasó: imagen oficial fijada por digest, rootless,
-  sin privileged, persistente, red pasta, sin puertos publicados ni dispositivos
-  extra, PID/IPC privados, `no-new-privileges`, capacidades limitadas, SELinux y
-  seccomp conservados, y un solo bind mount `lab/` con permisos 0700.
-- Se detuvo e inició `kali`. `kali-linux-everything` siguió instalado y se
-  conservaron archivos temporales de prueba tanto en la capa del contenedor
-  como en `/lab`; luego se retiraron esos archivos.
-- El escaneo fue solo a loopback. No se conectó a una VPN real ni se escaneó HTB.
+`/usr/bin/sleep` as PID 1 did not respond to SIGTERM in this test; Podman used SIGKILL after its stop timeout. Shut down stateful services cleanly before stopping Kali. Raw sockets, network administration, host live capture, Wi-Fi monitor/injection, Bluetooth, SDR, GPU, GUI integration, Fedora reboot, export/import restoration, other architectures, and future Rolling rebuilds were not validated. A personal HTB VPN profile was not imported and real HTB connectivity was not tested.
 
-## Advertencias y límites comprobados
-
-- `/usr/bin/sleep` como PID 1 no atendió SIGTERM. Podman agotó el timeout y
-  recurrió a SIGKILL. Stop/start y persistencia funcionaron; cierra servicios con
-  estado desde su interfaz antes de parar el contenedor.
-- El modo rootless no proporciona sockets raw ni administración de red. Nmap
-  TCP connect sirve para enumeración TCP autorizada; SYN/UDP, captura en vivo del
-  anfitrión, Wi-Fi monitor/inyección, Bluetooth, SDR y GPU no quedaron validados.
-- La instalación Everything incluye herramientas que pueden requerir GUI,
-  hardware, servicios, bases de datos, credenciales/API o ajustes adicionales.
-  No se afirma que todos los programas hayan sido ejecutados.
-- Fedora ya tenía OpenVPN y el plugin OpenVPN de NetworkManager. Se dejó el
-  soporte documentado/preparado, pero no se importó ni activó un perfil personal,
-  no se añadieron reglas de firewall y no se probó conectividad a HTB porque no
-  se proporcionaron un perfil y un objetivo para ello.
-- No se probó reinicio físico de Fedora, exportación/restauración, otras
-  arquitecturas ni reconstrucción con futuros índices Rolling.
-
-## Comandos de verificación principales
+For a local check on your own system:
 
 ```bash
 ./kali.sh status
@@ -92,6 +30,4 @@ podman --remote=false exec kali bash -c 'dpkg --audit'
 podman --remote=false exec kali nmap --unprivileged -sT -Pn -p 1-5 127.0.0.1
 ```
 
-La instalación se realizó mediante `./kali.sh install everything-full` tras
-estimar dependencias y comprobar que se conservaba la reserva de 20 GiB. Los
-registros locales están en `.state/` y no se publican.
+Local plans, inventories and logs are kept under `.state/` and are not committed.

@@ -63,7 +63,7 @@ class ProfileTests(unittest.TestCase):
 
         with patch.object(htb, "selected", return_value={"uuid": "selected-uuid", "configured": True}), \
                 patch.object(htb, "output", side_effect=command), patch.object(htb, "nm_get", side_effect=field):
-            with self.assertRaisesRegex(RuntimeError, "no atraviesa"):
+            with self.assertRaisesRegex(RuntimeError, "does not use this VPN"):
                 htb.vpn_context("10.129.1.2")
 
 

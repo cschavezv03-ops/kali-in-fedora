@@ -1,155 +1,77 @@
-# Kali Linux en Fedora 44 con Podman
+# Kali in Fedora (rootless Podman)
 
-Kali persistente de terminal para aprender ciberseguridad y resolver laboratorios
-autorizados, sin reemplazar Fedora ni usar máquinas virtuales.
-Puedes preparar un mínimo o instalar Everything con sus recomendaciones APT.
+Run a persistent, command-line Kali Linux environment inside a rootless Podman container on Fedora 44. This project creates a container named `kali` from the official Kali Rolling image; it does **not** replace Fedora, install a second kernel, or create a virtual machine. Kali packages and files inside the container persist across stops and starts. Only `lab/` is shared with Fedora.
 
-## Instalación
+## Choose an installation mode
 
-Requiere Fedora 44, Bash, Python 3, Podman rootless, `pasta` (paquete `passt`),
-`newuidmap`/`newgidmap` y rangos subordinados de UID/GID. SELinux debe estar en
-Enforcing y seccomp activo. Se necesitan al menos 22 GiB libres para empezar;
-el script exige conservar 20 GiB para Fedora.
+Both modes start with `setup`. Run these commands from the cloned repository as your **regular user, without sudo**:
+
+| Mode | Commands | What is installed inside Kali |
+| --- | --- | --- |
+| **Minimum** | `./kali.sh setup` | The Kali base image plus `ca-certificates`, `curl`, `iproute2`, `bind9-dnsutils` and their required dependencies. No broad Kali tool collection. |
+| **Everything** | `./kali.sh setup` then `./kali.sh install everything-full` | The minimum, then the official `kali-linux-everything` metapackage, its dependencies **and APT recommendations**. This is a large installation; it does not make every tool usable without further configuration. |
+
+**Already installed Minimum?** From the same repository directory, run `./kali.sh install everything-full`. The script reuses the existing `kali` container and keeps its installed packages and internal files; do **not** remove or recreate it to upgrade. It refreshes APT indexes, estimates and checks disk space, then installs the additional packages. `install` also restarts the container during final validation: finish any work inside it first. A repeated `setup` refreshes the minimum packages rather than resetting the container. An existing unrelated or incompatible container named `kali` is rejected, not overwritten.
+
+`everything-full` includes APT recommendations. The optional `everything` profile installs the same metapackage **without** recommendations; `headless` and `cli` are other optional tool selections. None of these profiles is installed by `setup`. `./kali.sh plan everything-full` estimates without installing; only `install` installs tools.
+
+## Requirements and first run
+
+- Fedora **44**, Bash, Python 3, Git (to clone), local **rootless Podman**, `pasta` (Fedora package `passt`), `newuidmap`/`newgidmap` with at least 65,536 subordinate UIDs and GIDs, `flock` (`util-linux`), `getenforce` (`libselinux-utils`), and coreutils (`stat` and `realpath`). SELinux must be Enforcing, with seccomp enabled. The script checks these prerequisites and stops if they are not met; it does **not** install Fedora packages or change host configuration.
+- Internet access to Docker Hub, Kali APT repositories, and `https://www.kali.org/` for validation. The pinned image in `image.lock` must support your architecture; the project has been validated on x86_64.
+- At least **22 GiB free in Podman storage** to begin Minimum. The script estimates additional APT download and installed size before each installation, adds 2 GiB of headroom, and requires 20 GiB to remain free. Everything can need **many tens of GiB more**; check the plan on your own machine. This is a preflight check, not a disk quota.
+
+If host packages are missing, install them **manually** from Fedora's official repositories (this is the only step here requiring administrator privileges):
+
+```bash
+sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs python3 util-linux libselinux-utils coreutils git
+```
+
+Your system may already include some of them. Ensure subordinate ID ranges and rootless Podman work before continuing; see [host requirements](docs/technical-guide.md#requirements). Do not run `kali.sh` with `sudo`.
 
 ```bash
 git clone https://github.com/cschavezv03-ops/kali-in-fedora.git
 cd kali-in-fedora
-./kali.sh inspect
-./kali.sh setup
+./kali.sh inspect                 # Read-only host inspection; installs nothing
+./kali.sh setup                   # Minimum mode; downloads the image and installs Kali packages
+./kali.sh shell                   # Enter Kali; type exit to leave it running
+```
+
+For Everything, after `setup` (either immediately or months later):
+
+```bash
+./kali.sh plan everything-full    # Optional: estimate only, no tool installation
+./kali.sh install everything-full # Install Everything in the existing container
 ./kali.sh shell
 ```
 
-Ejecuta el script como usuario normal, **sin sudo**. Si falta Podman, instala
-sus requisitos desde los repositorios oficiales de Fedora:
+The official `docker.io/kalilinux/kali-rolling` base is pinned by digest in `image.lock`. This pins the image, **not** future Kali Rolling APT package versions. Installation can take a long time. Do not stop the container during an installation. APT and operation logs are stored locally under `.state/` (for example `.state/setup-*.log` and `.state/install-*.log`). `lab/`, `.state/`, and `backups/` are excluded from Git.
 
-```bash
-sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs
-```
+## Everyday use and cleanup
 
-`setup` instala `ca-certificates`, `curl`, `iproute2` y `bind9-dnsutils`, y valida
-con un stop/start. Se puede repetir sin reinstalar paquetes ya presentes.
-Si existe un `kali` ajeno o incompatible, se detiene sin sobrescribirlo.
-
-El perfil completo con recomendaciones APT ya está instalado en este equipo.
-Para reproducir la instalación en otro Fedora 44, después de revisar el espacio:
-
-```bash
-./kali.sh install everything-full
-```
-
-Comprueba el espacio antes de instalar, bloquea el arranque automático de
-servicios y conserva los permisos rootless. Puede tardar bastante y se registra
-en `.state/install-*.log`. No interrumpas una instalación para reiniciar Kali.
-
-Se usa la [imagen oficial de Kali](https://www.kali.org/docs/containers/official-kalilinux-docker-images/)
-`docker.io/kalilinux/kali-rolling`, fijada por digest en `image.lock`. Esto fija la
-base, pero APT Rolling puede resolver versiones diferentes. Validado en Fedora
-44 x86_64; otras arquitecturas necesitan una base compatible.
-
-## Uso diario
-
-Desde el directorio del proyecto:
-
-| Acción | Comando |
+| Action | Command |
 | --- | --- |
-| Entrar a Kali, iniciándolo si hace falta | `./kali.sh shell` |
-| Salir de Bash y dejar Kali activo | `exit` |
-| Iniciar / detener | `./kali.sh start` / `./kali.sh stop` |
-| Consultar estado y espacio libre | `./kali.sh status` |
-| Validar conexión, seguridad y persistencia | `./kali.sh validate` |
-| Guardar versiones de paquetes | `./kali.sh inventory` |
-| Ver registros del proceso principal | `./kali.sh logs` |
-| Consultar ayuda | `./kali.sh help` |
+| Enter Kali (start it if stopped) | `./kali.sh shell` |
+| Leave the shell without stopping Kali | `exit` |
+| Start / stop the container | `./kali.sh start` / `./kali.sh stop` |
+| Check container status and free space | `./kali.sh status` |
+| Check connectivity, isolation, and persistence | `./kali.sh validate` |
+| Save installed package versions | `./kali.sh inventory` |
+| Show main-process logs / help | `./kali.sh logs` / `./kali.sh help` |
 
-**`validate` y la validación final de `setup` reinician el contenedor:** evita
-usarlos durante trabajo activo. Detenerlo conserva paquetes y archivos internos.
-No se inicia automáticamente al arrancar Fedora.
+`setup`, `install`, and `validate` stop and restart Kali during validation; **do not run them while work is active inside the container**. Stopping it does not uninstall anything, and it does not start automatically when Fedora boots. `logs` may be empty because the main process is `sleep`; use `.state/` for setup and installation logs.
 
-Trabaja en `/lab` dentro de Kali: es el mismo directorio `lab/` visible desde
-Fedora, con permisos `0700`. Los cambios y borrados afectan a ambos lados.
-No muevas el clon mientras exista el contenedor: el montaje usa su ruta absoluta.
-
-Los informes, inventario y planes están en `.state/`. `logs` suele estar vacío
-porque el proceso principal es `sleep`; consulta `setup-*.log` y `validate-*.log`
-para las operaciones del script. `lab/`, `.state/` y `backups/` se excluyen de Git.
-No publiques credenciales o evidencias ni las fuerces con `git add -f`.
-
-## Rootless y limitaciones
-
-Rootless significa que Podman funciona con tu usuario normal de Fedora. Aunque
-aparezcas como `root` dentro de Kali y puedas administrar sus paquetes, **no eres
-administrador de Fedora**. El contenedor comparte su kernel y puede modificar
-los archivos que le hayas compartido.
-
-- Solo se monta `lab/`, con etiqueta SELinux privada. Se conservan SELinux,
-  seccomp y firewalld; sin `--privileged` ni dispositivos adicionales.
-- Hay salida de red, sin puertos publicados ni red del anfitrión. No es un
-  cortafuegos de salida: también puede alcanzar destinos accesibles de la LAN.
-- Sin `NET_RAW` ni `NET_ADMIN`: SYN scan y captura en vivo tienen limitaciones.
-  Wi-Fi monitor/inyección, Bluetooth, SDR y GPU necesitan acceso adicional.
-- No hay sesión de escritorio ni integración gráfica. No se inicia `systemd` ni todos los
-  servicios de las herramientas automáticamente. Instalar no garantiza funcionar.
-- `sleep` como PID 1 puede ignorar SIGTERM: se observó que Podman recurrió a
-  SIGKILL tras 10 segundos. Cierra ordenadamente los servicios con estado antes
-  de detener Kali. La persistencia tras stop/start está comprobada.
-
-## Hack The Box: VPN en Fedora
-
-`htb.sh` prepara un perfil privado de NetworkManager y permite comprobar la ruta,
-escanear por TCP y recibir conexiones en Kali. Requiere `openvpn` y
-`NetworkManager-openvpn` en Fedora. No ejecutes `htb.sh` con sudo ni copies el
-perfil a `lab/` o al repositorio. Sustituye `IP_HTB` por tu objetivo autorizado:
+To permanently remove the container, back up anything you need **first**, then run:
 
 ```bash
-chmod 600 /ruta/privada/htb.ovpn
-./htb.sh import /ruta/privada/htb.ovpn  # Importa sin activar
-./htb.sh up                          # Activa solo este perfil
-./htb.sh check IP_HTB 80              # Usa un puerto que sepas abierto
-./htb.sh scan IP_HTB 1-65535          # Nmap TCP connect, sin sockets raw
-./htb.sh down
+./kali.sh stop
+./kali.sh remove
 ```
 
-El perfil usa túnel dividido, sin autoconexión ni sustitución del DNS global.
-NetworkManager puede solicitar autenticación mediante Polkit. No se modifican
-otros perfiles ni se desactiva firewalld. La VPN real de HTB necesita tu perfil
-personal y una comprobación posterior; no se afirma haberla probado aquí.
+`remove` requires an interactive terminal and asks you to type **`REMOVE kali` followed by the full container ID shown in the prompt**. This deletes all installed Kali packages and files in the container's internal writable layer (including `/root` and `/var/tmp`). It **does not** delete `lab/`, `.state/`, backups, or the downloaded image. It refuses to remove a running or incompatible container. To use the project again afterward, run `./kali.sh setup` (and, if desired, `./kali.sh install everything-full`). For separate backups of the container and `lab/`, see [backup and recovery](docs/technical-guide.md#backup-recovery-and-removal). Do not move the checkout while the container exists: the bind mount uses its absolute path.
 
-Para reverse shells y listeners, hay un relay limitado a la IP de la VPN y al
-objetivo indicado; no requiere recrear Kali ni publicar sus puertos. Consulta
-[VPN, escaneos y conexiones de vuelta](docs/htb.md), incluida la excepción de
-firewall opcional y temporal. La explicación del kernel y las IP está en
-[arquitectura de red](docs/htb.md#kernel-namespaces-e-ip).
+## Boundaries and optional VPN support
 
-## Más herramientas y espacio
+Inside Kali you appear as root for package management, **not** as Fedora's root user. `/lab` maps to this repository's `lab/` with private permissions; edits and deletions there affect both sides. There are no published ports or extra devices, no desktop integration, and no automatic `systemd` services. The container has outbound networking (including potentially reachable LAN hosts), but no `NET_RAW` or `NET_ADMIN`; SYN scans, live capture, Wi-Fi injection, and hardware-dependent tools may not work. Installing Everything does not automatically configure GUIs, services, accounts, or hardware. Use tools only on authorized targets. See the [technical guide](docs/technical-guide.md) for isolation, plans, and limitations.
 
-Estos comandos **solo estiman; no instalan herramientas** (a diferencia de `install`):
-
-```bash
-./kali.sh plan headless        # Conjunto oficial sin escritorio
-./kali.sh plan cli             # Metapaquetes temáticos de web, OSINT, tráfico y CTF
-./kali.sh plan everything      # Sin recomendaciones APT
-./kali.sh plan everything-full # Con recomendaciones APT
-```
-
-Everything con recomendaciones se estimó en 36,23 GiB instalados y 12,76 GiB de
-descarga. La capa escribible medida tras instalarlo ocupa cerca de 37,25 GiB,
-con 61,73 GiB libres al cerrar la validación (61,81 GiB tras la primera
-instalación). El presupuesto añade 2 GiB de margen y debe dejar 20 GiB libres;
-es una comprobación previa, no una cuota.
-Las cifras pueden cambiar. Algunas herramientas necesitan permisos, hardware,
-servicios o interfaz gráfica adicionales. Véase el [diagnóstico](docs/validation.md).
-
-## Respaldo y eliminación
-
-Respalda por separado la capa interna y `lab/`: una exportación de Podman no
-incluye el directorio compartido. Sigue la
-[guía de respaldo y recuperación](docs/technical-guide.md#respaldo-recuperación-y-eliminación)
-y verifica las copias antes de borrar.
-
-`./kali.sh remove` exige Kali detenido y confirmación interactiva escribiendo
-`ELIMINAR kali` más el ID completo mostrado. **Se pierden paquetes y archivos
-internos**, incluidos `/root` y `/var/tmp`; se conservan `lab/`, `.state/`, backups
-y la imagen. No existe eliminación automática.
-
-Para requisitos detallados, permisos, reproducibilidad, recuperación y pruebas,
-consulta la [guía técnica](docs/technical-guide.md).
+Optional Hack The Box support keeps the VPN **on Fedora**, not in Kali. It requires Fedora `openvpn` and `NetworkManager-openvpn`, a private personal VPN profile, and (for the provided scan/relay commands) Everything or an appropriate tool profile. It is **not** installed or connected by `setup`. See [HTB VPN setup and commands](docs/htb.md). Historical test results, which are not requirements or promises for other machines, are in [validation notes](docs/validation.md).

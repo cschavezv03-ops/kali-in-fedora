@@ -84,25 +84,34 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
         calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
         self.assertTrue(all(call[0] in ("info", "inspect", "container") for call in calls), calls)
 
+    def test_help_explains_minimum_to_everything_upgrade(self):
+        result = subprocess.run(["bash", str(self.repo / "kali.sh"), "help"],
+                                capture_output=True, text=True, env=self.env, cwd=self.repo)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("setup                Create/reuse kali and install Minimum only", result.stdout)
+        self.assertIn("install everything-full", result.stdout)
+        self.assertIn("without\nrecreating kali", result.stdout)
+        self.assertFalse(self.calls.exists())
+
     def test_foreign_container_is_not_adopted_or_stopped(self):
         self.data["Config"]["Labels"] = {}
         result = self.invoke("setup")
-        self.assertIn("FALLO propiedad_proyecto", result.stdout)
+        self.assertIn("FAIL managed_by_project", result.stdout)
         self.no_mutations()
 
     def test_extra_mount_blocks_access(self):
         self.data["Mounts"].append({"Source": "/unexpected", "Destination": "/extra"})
         result = self.invoke("shell")
-        self.assertIn("FALLO solo_lab", result.stdout)
+        self.assertIn("FAIL only_lab_mounted", result.stdout)
         self.no_mutations()
 
     def test_host_network_blocks_access(self):
         self.data["HostConfig"]["NetworkMode"] = "host"
-        self.assertIn("FALLO red_pasta", self.invoke("start").stdout)
+        self.assertIn("FAIL pasta_network", self.invoke("start").stdout)
         self.no_mutations()
 
     def test_remove_without_interactive_confirmation_never_deletes(self):
-        self.assertIn("terminal interactiva", self.invoke("remove").stderr)
+        self.assertIn("interactive terminal", self.invoke("remove").stderr)
         self.no_mutations()
 
     def test_lab_symlink_blocks_reuse(self):
@@ -110,7 +119,7 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
         target = self.base / "other"
         target.mkdir(mode=0o700)
         self.lab.symlink_to(target, target_is_directory=True)
-        self.assertIn("FALLO lab_privado", self.invoke("start").stdout)
+        self.assertIn("FAIL private_lab", self.invoke("start").stdout)
         self.no_mutations()
 
     def test_os_release_cannot_replace_kali_container_name(self):
@@ -124,7 +133,7 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
     def test_insufficient_disk_does_not_create_container(self):
         self.env["TEST_MISSING"] = "1"
         self.env["TEST_FREE_BYTES"] = str(21 * 2**30)
-        self.assertIn("reserva de 20 GiB", self.invoke("setup").stdout)
+        self.assertIn("keep 20 GiB", self.invoke("setup").stdout)
         self.no_mutations()
 
 
