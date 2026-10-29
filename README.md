@@ -1,37 +1,15 @@
-# Kali Linux en Fedora 44 con Podman rootless
+# Kali Linux en Fedora 44 con Podman
 
-Entorno persistente de terminal para laboratorios de ciberseguridad, sin máquinas
-virtuales ni sustitución de Fedora. `kali.sh` inspecciona el equipo, crea el
-contenedor `kali`, instala un conjunto mínimo y comprueba su funcionamiento.
-Las instalaciones amplias requieren una decisión posterior: el script solo las
-estima, nunca las instala automáticamente.
+Kali persistente de terminal para aprender ciberseguridad y resolver laboratorios
+autorizados, sin reemplazar Fedora ni usar máquinas virtuales.
+**Solo está instalado el entorno mínimo; Everything todavía no está instalado.**
 
-## Requisitos
+## Instalación
 
-- Fedora 44, usuario normal y Bash. **No ejecutar el script con `sudo`.**
-- Podman local funcional en modo rootless, Python 3 y herramientas de coreutils.
-- `newuidmap`/`newgidmap`, rangos de al menos 65536 IDs en `/etc/subuid` y
-  `/etc/subgid`, y `pasta` (paquete Fedora `passt`).
-- Conexión a Docker Hub, repositorios de Kali y `https://www.kali.org/`.
-- Al menos 22 GiB libres en el almacenamiento de Podman para empezar: 20 GiB
-  quedan como reserva para Fedora y 2 GiB son un presupuesto inicial conservador.
-  Antes de instalar se comprueba también el presupuesto calculado con APT.
-- SELinux y seccomp activos para conservar las protecciones normales de Fedora.
-
-Si falta Podman, revisa primero la inspección. La propuesta de instalación usa
-únicamente repositorios oficiales de Fedora y necesita autorización de administrador:
-
-```bash
-sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs
-```
-
-El script **no ejecuta este comando**, no reinstala paquetes de Fedora ni corrige
-automáticamente rangos de usuarios, redes o políticas. Si faltan permisos o hay
-un conflicto, se detiene. `slirp4netns` no es necesario para este proyecto.
-
-## Inicio rápido
-
-Clona el repositorio, revisa el script y ejecuta como usuario normal:
+Requiere Fedora 44, Bash, Python 3, Podman rootless, `pasta` (paquete `passt`),
+`newuidmap`/`newgidmap` y rangos subordinados de UID/GID. SELinux debe estar en
+Enforcing y seccomp activo. Se necesitan al menos 22 GiB libres para empezar;
+el script exige conservar 20 GiB para Fedora.
 
 ```bash
 git clone https://github.com/cschavezv03-ops/kali-in-fedora.git
@@ -41,282 +19,106 @@ cd kali-in-fedora
 ./kali.sh shell
 ```
 
-`inspect` no instala paquetes, crea contenedores ni cambia configuraciones.
-Podman puede inicializar sus propios directorios de ejecución al consultarlo.
-La inspección muestra resultados reducidos; no vuelca variables de entorno,
-credenciales ni la configuración completa del equipo.
-
-`setup` comprueba Podman, descarga la base, crea el contenedor, actualiza índices
-APT, estima e instala el mínimo y valida persistencia mediante `stop`/`start`.
-Se puede repetir: reutiliza exclusivamente un contenedor de este proyecto que
-pase la auditoría y APT conserva los paquetes que ya están instalados.
-No usa `apt full-upgrade`, `apt autoremove` ni actualiza Fedora.
-
-Si `kali` ya existe y no pertenece a este proyecto, o sus opciones son
-incompatibles, se detiene sin sobrescribirlo, detenerlo ni eliminarlo.
-No basta con renombrar un contenedor ajeno para adoptarlo.
-
-## Imagen oficial y reproducibilidad
-
-Fuente: `docker.io/kalilinux/kali-rolling:latest`, publicada por Kali y documentada
-en [imágenes oficiales](https://www.kali.org/docs/containers/official-kalilinux-docker-images/)
-y [uso con Podman](https://www.kali.org/docs/containers/using-kali-podman-images/).
-
-`image.lock` contiene la referencia completa con digest SHA-256 verificada en la
-descarga inicial. Se versiona para reutilizar la misma base al clonar el proyecto.
-El script solo acepta ese repositorio oficial con un digest válido. No cambia el
-lock ni actualiza la base cuando se repite `setup`. Si todavía no hay lock, lo
-genera tras descargar la etiqueta oficial; revisa y versiona ese archivo.
-
-El digest fija la base, **no congela Kali Rolling ni sus repositorios APT**.
-Las dependencias resueltas pueden cambiar o dejar de estar disponibles. El
-inventario `.state/packages.tsv` registra las versiones realmente instaladas,
-pero no es un repositorio de paquetes ni garantiza reconstrucciones idénticas.
-No se omiten verificaciones TLS ni firmas APT. Un digest verifica identidad del
-contenido; no equivale por sí solo a una firma independiente del editor.
-
-La imagen fijada debe ser compatible con la arquitectura de la máquina destino.
-La validación inicial de este proyecto se realiza en x86_64; no se afirma haber
-probado otras arquitecturas de Fedora 44.
-
-No se necesita publicar imágenes grandes en GitHub. Se versionan script,
-documentación, digest y un resumen de validación sin datos personales.
-Capturas, evidencias, registros y archivos de laboratorio quedan fuera de Git.
-
-## Aislamiento y permisos
-
-- Podman local rootless. Se rechazan ejecución como administrador y variables
-  que redirijan el motor o alteren su configuración desde el entorno.
-- UID 0 **dentro** del contenedor para administrar APT. Con
-  `--userns=keep-id:uid=0,gid=0`, ese UID corresponde al usuario normal de Fedora;
-  no es root del anfitrión. Los archivos creados en `/lab` quedan a tu nombre.
-- Red `pasta:--no-map-gw`, sin publicar puertos ni usar `--network=host`.
-  Se mantiene salida a Internet, necesaria para APT. No es un cortafuegos de
-  salida: el contenedor puede iniciar conexiones hacia destinos alcanzables,
-  incluidos equipos de la LAN; úsalo solo con autorización.
-- Espacios privados de PID, IPC, UTS y cgroup; límite de 512 procesos.
-- Se eliminan todas las capacidades y solo se añaden `CHOWN`, `DAC_OVERRIDE`,
-  `FOWNER`, `FSETID`, `SETGID`, `SETUID`, `SETFCAP` y `SYS_CHROOT`, para gestión de
-  paquetes y permisos dentro del contenedor. Sin `NET_ADMIN` ni `NET_RAW`.
-- `no-new-privileges`, seccomp predeterminado y SELinux conservados.
-- Sin `--privileged`, dispositivos extra, sockets del motor ni montajes de
-  credenciales, claves SSH o del directorio personal completo.
-- Único montaje de usuario: `./lab` a `/lab`, lectura/escritura, permisos `0700`
-  y `:Z`. Podman aplica el contexto SELinux privado únicamente a ese directorio.
-  No se cambian recursivamente propietarios con `:U` ni permisos existentes.
-- Sin inicio automático al arrancar Fedora; sin `--rm`. Salir de Bash deja el
-  contenedor persistente. Los registros del proceso principal se limitan a 10 MB.
-
-`lab` y `.state` deben ser directorios reales, pertenecer al usuario y tener modo
-`0700`; el script rechaza enlaces simbólicos y directorios incompatibles. No
-introduzcas credenciales ni archivos sensibles en `lab`, tampoco mediante enlaces
-duros. Un contenedor comparte el kernel de Fedora: no ofrece el aislamiento de
-una máquina virtual. No es un entorno para ejecutar malware desconocido.
-
-No se cambia SELinux, firewalld, GRUB, kernel, controladores, NetworkManager ni
-repositorios del anfitrión. Los repositorios APT de Kali están dentro de Kali.
-
-## Componentes mínimos y validación
-
-Se solicitan únicamente `ca-certificates`, `curl`, `iproute2` y `bind9-dnsutils`, junto
-con sus dependencias obligatorias, usando `--no-install-recommends` y
-`--no-remove`. La base ya incluye Bash y APT. No se instala un escritorio, SSH
-server ni un metapaquete de seguridad durante la preparación mínima.
+Ejecuta el script como usuario normal, **sin sudo**. Si falta Podman, instala
+sus requisitos desde los repositorios oficiales de Fedora:
 
 ```bash
-./kali.sh validate
-./kali.sh inventory
-./kali.sh status
+sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-overlayfs
 ```
 
-`validate` puede interrumpir trabajo activo porque detiene y vuelve a iniciar
-`kali`. Comprueba:
+`setup` instala `ca-certificates`, `curl`, `iproute2` y `bind9-dnsutils`, y valida
+con un stop/start. Se puede repetir sin reinstalar paquetes ya presentes.
+Si existe un `kali` ajeno o incompatible, se detiene sin sobrescribirlo.
 
-1. Que Kali y APT responden, los cuatro paquetes están instalados y `dpkg --audit`
-   no informa problemas.
-2. Resolución DNS y HTTPS hacia la web oficial de Kali, con verificación TLS.
-3. Diagnóstico de la interfaz loopback con `ip` y consulta DNS con `dig`.
-4. Mapeo de UID rootless, seccomp y `NoNewPrivs` en el proceso del contenedor.
-5. Opciones de aislamiento, ausencia de puertos, dispositivos y montajes extra.
-6. Escritura compartida con propietario Fedora correcto y permisos `0600`.
-7. Persistencia de un archivo interno, otro compartido y paquetes tras `stop/start`.
+Se usa la [imagen oficial de Kali](https://www.kali.org/docs/containers/official-kalilinux-docker-images/)
+`docker.io/kalilinux/kali-rolling`, fijada por digest en `image.lock`. Esto fija la
+base, pero APT Rolling puede resolver versiones diferentes. Validado en Fedora
+44 x86_64; otras arquitecturas necesitan una base compatible.
 
-Usa nombres aleatorios para los archivos de prueba y retira solo esos archivos
-después de comprobar su contenido. Si una prueba falla, se conserva el entorno
-para diagnosticarlo. No prueba reinicio físico de Fedora ni disponibilidad de
-cada herramienta de Kali. No escanea equipos ajenos.
+## Uso diario
 
-## Uso diario y registros
+Desde el directorio del proyecto:
 
-| Operación | Comando |
+| Acción | Comando |
 | --- | --- |
-| Inspeccionar Fedora y Podman | `./kali.sh inspect` |
-| Preparar el entorno mínimo | `./kali.sh setup` |
-| Iniciar | `./kali.sh start` |
-| Entrar a terminal | `./kali.sh shell` |
-| Salir de terminal | `exit` |
-| Detener sin perder datos | `./kali.sh stop` |
-| Estado y disco disponible | `./kali.sh status` |
-| Validar, reiniciando el contenedor | `./kali.sh validate` |
-| Registrar versiones | `./kali.sh inventory` |
-| Registros del proceso principal | `./kali.sh logs` |
+| Entrar a Kali, iniciándolo si hace falta | `./kali.sh shell` |
+| Salir de Bash y dejar Kali activo | `exit` |
+| Iniciar / detener | `./kali.sh start` / `./kali.sh stop` |
+| Consultar estado y espacio libre | `./kali.sh status` |
+| Validar conexión, seguridad y persistencia | `./kali.sh validate` |
+| Guardar versiones de paquetes | `./kali.sh inventory` |
+| Ver registros del proceso principal | `./kali.sh logs` |
+| Consultar ayuda | `./kali.sh help` |
 
-`shell` inicia el contenedor si hace falta y abre Bash en `/lab` con umask `077`.
-Desde Fedora puedes abrir los mismos archivos en `./lab`. No muevas el clon
-mientras exista el contenedor: el montaje contiene la ruta absoluta original.
+**`validate` y la validación final de `setup` reinician el contenedor:** evita
+usarlos durante trabajo activo. Detenerlo conserva paquetes y archivos internos.
+No se inicia automáticamente al arrancar Fedora.
 
-Los paquetes y archivos internos persisten en la capa escribible de Podman;
-`lab/` persiste en Fedora. Parar no elimina ninguno de los dos. Si falla una
-instalación, no vuelvas a crear ni elimines el contenedor: consulta primero sus
-registros y el inventario. `dpkg --audit` permite diagnosticar paquetes a medio
-configurar. Las reparaciones o actualizaciones amplias deben revisarse antes.
+Trabaja en `/lab` dentro de Kali: es el mismo directorio `lab/` visible desde
+Fedora, con permisos `0700`. Los cambios y borrados afectan a ambos lados.
+No muevas el clon mientras exista el contenedor: el montaje usa su ruta absoluta.
 
-Limitación comprobada del apagado: `sleep infinity` es PID 1 y puede ignorar
-SIGTERM. En la validación, Podman esperó 10 segundos y recurrió a SIGKILL; los
-archivos y paquetes persistieron y el arranque posterior funcionó. Antes de
-detenerlo, termina desde sus propias herramientas cualquier base de datos o
-proceso que hayas iniciado. Este mínimo no instala esos servicios. No se recrea
-ni elimina el contenedor automáticamente para cambiar su proceso principal.
-Una futura configuración con un proceso init requiere revisar esa migración.
+Los informes, inventario y planes están en `.state/`. `logs` suele estar vacío
+porque el proceso principal es `sleep`; consulta `setup-*.log` y `validate-*.log`
+para las operaciones del script. `lab/`, `.state/` y `backups/` se excluyen de Git.
+No publiques credenciales o evidencias ni las fuerces con `git add -f`.
 
-Kali usa el kernel de Fedora: `uname` dentro del contenedor no identifica un
-kernel independiente de Kali.
+## Rootless y limitaciones
 
-`.state/setup-*.log` y `.state/validate-*.log` contienen las operaciones y errores.
-Los planes guardan la lista completa de dependencias en `.state/plan-*.txt` y sus
-tamaños en `.state/plan-*.json`. Pueden incluir rutas o datos del equipo, por lo
-que se excluyen de Git. `podman logs` normalmente estará vacío porque el proceso
-principal es `sleep infinity`; las salidas de `podman exec` están en los informes
-del script, no en ese registro. El trabajo manual dentro de Bash no se registra
-automáticamente.
+Rootless significa que Podman funciona con tu usuario normal de Fedora. Aunque
+aparezcas como `root` dentro de Kali y puedas administrar sus paquetes, **no eres
+administrador de Fedora**. El contenedor comparte su kernel y puede modificar
+los archivos que le hayas compartido.
 
-## Instalación progresiva y diagnóstico de almacenamiento
+- Solo se monta `lab/`, con etiqueta SELinux privada. Se conservan SELinux,
+  seccomp y firewalld; sin `--privileged` ni dispositivos adicionales.
+- Hay salida de red, sin puertos publicados ni red del anfitrión. No es un
+  cortafuegos de salida: también puede alcanzar destinos accesibles de la LAN.
+- Sin `NET_RAW` ni `NET_ADMIN`: SYN scan y captura en vivo tienen limitaciones.
+  Wi-Fi monitor/inyección, Bluetooth, SDR y GPU necesitan acceso adicional.
+- No hay escritorio ni integración gráfica. No se inicia `systemd` ni todos los
+  servicios de las herramientas automáticamente. Instalar no garantiza funcionar.
+- `sleep` como PID 1 puede ignorar SIGTERM: se observó que Podman recurrió a
+  SIGKILL tras 10 segundos. Cierra ordenadamente los servicios con estado antes
+  de detener Kali. La persistencia tras stop/start está comprobada.
 
-Después de validar el mínimo, compara perfiles **sin instalar herramientas**:
+Puede servir para muchas máquinas de **Hack The Box**, después de instalar las
+herramientas y verificar la conexión a su VPN. Una opción es configurar la VPN
+en Fedora y comprobar el acceso desde Kali; requiere autorización para los
+cambios de red. Los escaneos TCP connect no necesitan sockets raw. Las reverse
+shells necesitan una ruta de entrada y un listener accesible: no funcionan
+por defecto dentro de este contenedor sin puertos publicados. No se ha probado
+una máquina de HTB ni configurado su VPN aquí. Consulta el
+[acceso oficial a HTB](https://help.hackthebox.com/en/articles/5185687-introduction-to-lab-access).
 
-```bash
-./kali.sh plan headless
-./kali.sh plan cli
-./kali.sh plan everything
-./kali.sh plan everything-full
-```
+## Más herramientas y espacio
 
-Cada plan actualiza índices y usa `apt-get --assume-no --no-remove
---no-install-recommends install ...`, salvo `everything-full`, que utiliza
-`--install-recommends` para estimar también las recomendaciones habituales de
-APT. APT calcula dependencias y aborta antes de
-descargar paquetes o instalarlos. Sí ocupa espacio para los índices actualizados
-y los informes locales. Si APT no resuelve el perfil o no se puede interpretar
-su estimación, el script se detiene y no considera aprobado el plan.
-
-| Perfil | Selección |
-| --- | --- |
-| `headless` | `kali-linux-headless`, conjunto oficial sin escritorio |
-| `cli` | Información/OSINT, web, tráfico, forense, criptografía/esteganografía y análisis inverso, mediante seis metapaquetes `kali-tools-*` |
-| `everything` | `kali-linux-everything`, sin recomendaciones adicionales |
-| `everything-full` | El mismo metapaquete con recomendaciones APT |
-
-**`cli` es una selección temática, no una garantía de que todas sus dependencias
-sean de consola o funcionen sin configuración adicional.** Las agrupaciones
-oficiales también pueden incluir aplicaciones gráficas y servicios. La elección
-final se hará después de revisar dependencias y limitaciones.
-
-El presupuesto suma instalación adicional, descarga estimada y 2 GiB de margen
-temporal, y exige conservar 20 GiB libres en el sistema de archivos donde Podman
-almacena sus capas. Es una comprobación previa, **no una cuota ni una reserva
-real**: otras aplicaciones pueden consumir espacio durante la instalación.
-Snapshots Btrfs, bases de datos, diccionarios extra, cachés y exportaciones pueden
-necesitar más. Los tamaños APT no equivalen exactamente a bloques físicos usados.
-
-La [tabla oficial de tamaños](https://www.kali.org/docs/installation/installation-sizes/)
-indica unos 34 GB para Everything sin escritorio en Kali **2024.1**. Es una
-referencia histórica, no una medición de Kali Rolling actual. Consulta los planes
-obtenidos en tu máquina y el diagnóstico versionado antes de decidir.
-
-Las herramientas de red TCP, web, OSINT, CTF y análisis de archivos pueden ser
-útiles en este entorno. Requieren revisión individual:
-
-- `nmap -sT` puede trabajar sin sockets raw; SYN scan, ARP y captura en vivo
-  necesitan capacidades adicionales o están limitados por la red rootless.
-- El análisis de PCAP y evidencias copiadas a `lab` no necesita capturar Fedora.
-  El contenedor no observa automáticamente el tráfico del anfitrión.
-- Wi-Fi monitor/inyección, Bluetooth, SDR, USB y GPU requieren hardware y permisos
-  adicionales, que este script no concede.
-- Burp, Wireshark GUI y otras aplicaciones gráficas requieren integrar una sesión
-  gráfica; no se comparten X11, Wayland ni D-Bus por defecto.
-- Bases de datos y servidores necesitan configuración y procesos propios.
-  Este contenedor no inicia `systemd`; instalar un paquete no inicia todos sus
-  servicios. OSINT puede requerir cuentas o claves API propias.
-
-Tener todas las herramientas instaladas no significa que todas estén operativas.
-No se concederán privilegios extra ni se instalará la selección amplia sin la
-decisión correspondiente. Usa herramientas solo en laboratorios y objetivos
-para los que tengas autorización.
-
-Referencias: [metapaquetes oficiales](https://www.kali.org/docs/general-use/metapackages/),
-[lista de dependencias](https://www.kali.org/tools/kali-meta/) y
-[opciones de Podman](https://docs.podman.io/en/latest/markdown/podman-run.1.html).
-
-## Respaldo, recuperación y eliminación
-
-Antes de eliminar, identifica dónde guardaste datos y crea una copia. El respaldo
-del contenedor **no incluye** `lab/` ni `.state/`. Una exportación puede contener
-credenciales o datos sensibles: no la publiques en GitHub.
-
-Ejemplo manual, desde la raíz del repositorio y con un nombre de backup nuevo:
+Estos comandos **solo estiman; no instalan herramientas**:
 
 ```bash
-./kali.sh stop
-mkdir -m 700 backups
-# Reemplaza FECHA por una fecha o identificador nuevo; no sobrescribas copias.
-(umask 077; set -C; podman export kali > backups/kali-rootfs-FECHA.tar)
-(umask 077; set -C; tar -czf backups/lab-FECHA.tar.gz -- lab)
-(umask 077; set -C; tar -czf backups/state-FECHA.tar.gz -- .state)
+./kali.sh plan headless        # Conjunto oficial sin escritorio
+./kali.sh plan cli             # Metapaquetes temáticos de web, OSINT, tráfico y CTF
+./kali.sh plan everything      # Sin recomendaciones APT
+./kali.sh plan everything-full # Con recomendaciones APT
 ```
 
-Si `backups` ya existe, revisa sus permisos y omite `mkdir`; no lo borres.
-Comprueba el código de salida y que los archivos pueden listarse antes de confiar
-en ellos. `podman export` conserva el sistema de archivos, pero no toda la
-configuración del contenedor: para reconstruirlo hacen falta también este script,
-el digest y las opciones documentadas. Restaurar un clon más su `lab` reproduce el
-entorno mínimo; no recupera automáticamente paquetes adicionales ni archivos de
-la capa interna. Una restauración desde exportación requiere importar la imagen
-y crear un contenedor con la configuración equivalente, bajo revisión manual.
-No se ha probado esa restauración salvo que lo indique el informe de validación.
+Everything con recomendaciones se estimó en 36,23 GiB instalados y 12,76 GiB de
+descarga. El presupuesto añade 2 GiB de margen y debe dejar 20 GiB libres; es una
+comprobación previa, no una cuota. Las cifras pueden cambiar. La instalación
+amplia se decide aparte: algunas herramientas necesitan permisos, hardware,
+servicios o interfaz gráfica adicionales. Véase el [diagnóstico](docs/validation.md).
 
-```bash
-./kali.sh remove
-```
+## Respaldo y eliminación
 
-`remove` exige que el contenedor esté detenido, vuelve a auditarlo, muestra cuántas
-entradas cambiaron y advierte que se perderá **toda su capa interna**, incluidos
-paquetes, `/root` y `/var/tmp`. Solo procede en una terminal interactiva después
-de escribir `ELIMINAR kali` seguido del ID completo mostrado. Elimina por ese ID,
-sin `--force`, y conserva `lab/`, `.state/`, backups y la imagen. No existe una
-opción de confirmación automática. No elimina otros contenedores, imágenes o
-volúmenes ni ejecuta `podman system prune`.
+Respalda por separado la capa interna y `lab/`: una exportación de Podman no
+incluye el directorio compartido. Sigue la
+[guía de respaldo y recuperación](docs/technical-guide.md#respaldo-recuperación-y-eliminación)
+y verifica las copias antes de borrar.
 
-## Publicación y verificación
+`./kali.sh remove` exige Kali detenido y confirmación interactiva escribiendo
+`ELIMINAR kali` más el ID completo mostrado. **Se pierden paquetes y archivos
+internos**, incluidos `/root` y `/var/tmp`; se conservan `lab/`, `.state/`, backups
+y la imagen. No existe eliminación automática.
 
-Versiona `kali.sh`, `README.md`, `.gitignore`, `image.lock`, `LICENSE` y los
-informes resumidos de `docs/`. Revisa siempre `git diff --cached` antes del commit.
-`.gitignore` reduce el riesgo de publicar material de laboratorio, pero no
-sustituye esa revisión. Nunca uses `git add -f` con evidencias o secretos.
-
-El informe en `docs/validation.md`, si existe, distingue verificaciones realizadas,
-estimaciones APT y pruebas pendientes. No supone que todos los equipos Fedora 44
-produzcan exactamente los mismos resultados.
-
-Pruebas del script (no necesitan descargar imágenes ni usar el motor real):
-
-```bash
-bash -n kali.sh
-python3 -m unittest discover -s tests -v
-git diff --check
-```
-
-Las pruebas de regresión usan un motor simulado y comprueban rechazo de
-contenedores ajenos, montajes extra, red del anfitrión, enlaces simbólicos,
-espacio insuficiente y borrado sin confirmación, además del nombre fijo `kali`.
-Requieren ejecutar como usuario normal en Fedora 44. La validación real del
-contenedor es una comprobación adicional, no está sustituida por esas pruebas.
+Para requisitos detallados, permisos, reproducibilidad, recuperación y pruebas,
+consulta la [guía técnica](docs/technical-guide.md).
