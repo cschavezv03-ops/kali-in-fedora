@@ -31,12 +31,13 @@ Uso: ./kali.sh COMANDO
   status | logs        Estado reducido o últimos 100 registros del proceso principal
   inventory            Guardar versiones instaladas en .state/packages.tsv
   plan [PERFIL]        Actualizar índices y estimar SIN instalar (default: cli)
+  install PERFIL       Instalar explícitamente un perfil, comprobando el espacio
   remove               Eliminar solo kali detenido, con confirmación interactiva
   help                 Esta ayuda
 
 Perfiles de plan: cli, headless, everything, everything-full.
 everything-full incluye recomendaciones APT. Ninguno se instala automáticamente.
-Solo setup instala paquetes, únicamente los mínimos documentados.
+setup instala el mínimo; install instala el perfil solicitado.
 No se instala Podman ni se modifica la configuración de Fedora automáticamente.
 EOF
 }
@@ -329,26 +330,65 @@ setup() {
     validate
 }
 
-plan() {
-    local profile=${1:-cli} packages=()
-    case "$profile" in
-        cli) packages=(kali-tools-information-gathering kali-tools-web kali-tools-sniffing-spoofing kali-tools-forensics kali-tools-crypto-stego kali-tools-reverse-engineering);;
-        headless) packages=(kali-linux-headless);;
-        everything) packages=(kali-linux-everything);;
-        everything-full) packages=(kali-linux-everything);;
+profile_packages() {
+    case "$1" in
+        cli) PACKAGES=(kali-tools-information-gathering kali-tools-web kali-tools-sniffing-spoofing kali-tools-forensics kali-tools-crypto-stego kali-tools-reverse-engineering);;
+        headless) PACKAGES=(kali-linux-headless);;
+        everything|everything-full) PACKAGES=(kali-linux-everything);;
         *) die 'Perfil desconocido; usa cli, headless, everything o everything-full.';;
     esac
+}
+
+plan() {
+    local profile=${1:-cli}
+    profile_packages "$profile"
     require_managed
     private_dir "$STATE"
     start_container
     apt_update
     note "Propuesta $profile; NO instala paquetes"
-    printf 'Metapaquetes:'; printf ' %s' "${packages[@]}"; printf '\n'
-    apt_plan "$profile" "${packages[@]}"
+    printf 'Metapaquetes:'; printf ' %s' "${PACKAGES[@]}"; printf '\n'
+    apt_plan "$profile" "${PACKAGES[@]}"
     local budget
     budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-$profile.json")
     check_space "$budget"
-    printf 'Esta comprobación no garantiza compatibilidad de todas las herramientas. Instalación amplia pendiente de decisión explícita.\n'
+    printf 'Este plan no instala ni garantiza compatibilidad. Para instalar se requiere el comando install explícito.\n'
+}
+
+install_tools() {
+    local profile=${1:-}
+    [[ -n "$profile" ]] || die 'Indica el perfil explícitamente: install everything-full, everything, headless o cli.'
+    plan "$profile"
+    note "Instalación explícita del perfil $profile"
+    # Prevent package postinst scripts from starting network services by default.
+    # The official image already ships policy-rc.d returning 101; never replace it.
+    pm exec "$NAME" bash -c '
+        if test ! -e /usr/sbin/policy-rc.d; then
+            (set -C; printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d) || exit
+            chmod 755 /usr/sbin/policy-rc.d
+        fi
+        /usr/sbin/policy-rc.d kali-in-fedora start >/dev/null 2>&1
+        test "$?" -eq 101
+    ' || die 'La política de arranque de servicios no bloquea el inicio automático; revisa antes de instalar.'
+    pm exec -i "$NAME" debconf-set-selections <<'EOF'
+wireshark-common wireshark-common/install-setuid boolean false
+macchanger macchanger/automatically_run boolean false
+EOF
+    local recommend_flag=--no-install-recommends
+    [[ "$profile" != everything-full ]] || recommend_flag=--install-recommends
+    run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
+        apt-get --yes --no-remove "$recommend_flag" -o Dpkg::Use-Pty=0 install "${PACKAGES[@]}"
+    inventory
+    validate
+    pm exec "$NAME" bash -ceu '
+        test -z "$(dpkg --audit)"
+        nmap --version | head -n 1
+        for tool in nmap tcpdump tshark sqlmap nikto gobuster ffuf python3 gdb yara; do
+            command -v "$tool" >/dev/null
+            printf "Disponible: %s\n" "$tool"
+        done
+    '
+    note 'Instalación completada. Los servicios y las herramientas de hardware o GUI requieren preparación específica.'
 }
 
 remove_container() {
@@ -373,6 +413,15 @@ case "$command" in
 esac
 prerequisites
 case "$command" in
+    setup|validate|plan|install)
+        command -v flock >/dev/null || die 'Falta flock (util-linux).'
+        private_dir "$STATE"
+        [[ ! -L "$STATE/operation.lock" ]] || die 'El lock no puede ser un enlace simbólico.'
+        exec 9>"$STATE/operation.lock"
+        flock -n 9 || die 'Hay otra operación de paquetes o validación en curso.'
+        ;;
+esac
+case "$command" in
     setup) private_dir "$STATE"; setup 2>&1 | tee "$STATE/setup-$(date -u +%Y%m%dT%H%M%SZ).log";;
     validate) private_dir "$STATE"; validate 2>&1 | tee "$STATE/validate-$(date -u +%Y%m%dT%H%M%SZ).log";;
     start) require_managed; start_container;;
@@ -382,6 +431,7 @@ case "$command" in
     logs) require_managed; pm logs --tail 100 "$NAME";;
     inventory) require_managed; start_container; inventory;;
     plan) plan "${2:-cli}";;
+    install) install_tools "${2:-}" 2>&1 | tee "$STATE/install-$(date -u +%Y%m%dT%H%M%SZ).log";;
     remove) remove_container;;
     *) help_text; die 'Comando desconocido.';;
 esac

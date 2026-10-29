@@ -13,6 +13,9 @@
 !.env.example
 *.pem
 *.key
+*.ovpn
+*.p12
+*.pfx
 __pycache__/
 .DS_Store
 *~

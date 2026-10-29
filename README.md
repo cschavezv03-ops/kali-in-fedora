@@ -2,7 +2,7 @@
 
 Kali persistente de terminal para aprender ciberseguridad y resolver laboratorios
 autorizados, sin reemplazar Fedora ni usar máquinas virtuales.
-**Solo está instalado el entorno mínimo; Everything todavía no está instalado.**
+Puedes preparar un mínimo o instalar Everything con sus recomendaciones APT.
 
 ## Instalación
 
@@ -29,6 +29,16 @@ sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-ove
 `setup` instala `ca-certificates`, `curl`, `iproute2` y `bind9-dnsutils`, y valida
 con un stop/start. Se puede repetir sin reinstalar paquetes ya presentes.
 Si existe un `kali` ajeno o incompatible, se detiene sin sobrescribirlo.
+
+Para instalar todas las herramientas después del mínimo:
+
+```bash
+./kali.sh install everything-full
+```
+
+Comprueba el espacio antes de instalar, bloquea el arranque automático de
+servicios y conserva los permisos rootless. Puede tardar bastante y se registra
+en `.state/install-*.log`. No interrumpas una instalación para reiniciar Kali.
 
 Se usa la [imagen oficial de Kali](https://www.kali.org/docs/containers/official-kalilinux-docker-images/)
 `docker.io/kalilinux/kali-rolling`, fijada por digest en `image.lock`. Esto fija la
@@ -76,24 +86,42 @@ los archivos que le hayas compartido.
   cortafuegos de salida: también puede alcanzar destinos accesibles de la LAN.
 - Sin `NET_RAW` ni `NET_ADMIN`: SYN scan y captura en vivo tienen limitaciones.
   Wi-Fi monitor/inyección, Bluetooth, SDR y GPU necesitan acceso adicional.
-- No hay escritorio ni integración gráfica. No se inicia `systemd` ni todos los
+- No hay sesión de escritorio ni integración gráfica. No se inicia `systemd` ni todos los
   servicios de las herramientas automáticamente. Instalar no garantiza funcionar.
 - `sleep` como PID 1 puede ignorar SIGTERM: se observó que Podman recurrió a
   SIGKILL tras 10 segundos. Cierra ordenadamente los servicios con estado antes
   de detener Kali. La persistencia tras stop/start está comprobada.
 
-Puede servir para muchas máquinas de **Hack The Box**, después de instalar las
-herramientas y verificar la conexión a su VPN. Una opción es configurar la VPN
-en Fedora y comprobar el acceso desde Kali; requiere autorización para los
-cambios de red. Los escaneos TCP connect no necesitan sockets raw. Las reverse
-shells necesitan una ruta de entrada y un listener accesible: no funcionan
-por defecto dentro de este contenedor sin puertos publicados. No se ha probado
-una máquina de HTB ni configurado su VPN aquí. Consulta el
-[acceso oficial a HTB](https://help.hackthebox.com/en/articles/5185687-introduction-to-lab-access).
+## Hack The Box: VPN en Fedora
+
+`htb.sh` prepara un perfil privado de NetworkManager y permite comprobar la ruta,
+escanear por TCP y recibir conexiones en Kali. Requiere `openvpn` y
+`NetworkManager-openvpn` en Fedora. No ejecutes `htb.sh` con sudo ni copies el
+perfil a `lab/` o al repositorio. Sustituye `IP_HTB` por tu objetivo autorizado:
+
+```bash
+chmod 600 /ruta/privada/htb.ovpn
+./htb.sh import /ruta/privada/htb.ovpn  # Importa sin activar
+./htb.sh up                          # Activa solo este perfil
+./htb.sh check IP_HTB 80              # Usa un puerto que sepas abierto
+./htb.sh scan IP_HTB 1-65535          # Nmap TCP connect, sin sockets raw
+./htb.sh down
+```
+
+El perfil usa túnel dividido, sin autoconexión ni sustitución del DNS global.
+NetworkManager puede solicitar autenticación mediante Polkit. No se modifican
+otros perfiles ni se desactiva firewalld. La VPN real de HTB necesita tu perfil
+personal y una comprobación posterior; no se afirma haberla probado aquí.
+
+Para reverse shells y listeners, hay un relay limitado a la IP de la VPN y al
+objetivo indicado; no requiere recrear Kali ni publicar sus puertos. Consulta
+[VPN, escaneos y conexiones de vuelta](docs/htb.md), incluida la excepción de
+firewall opcional y temporal. La explicación del kernel y las IP está en
+[arquitectura de red](docs/htb.md#kernel-namespaces-e-ip).
 
 ## Más herramientas y espacio
 
-Estos comandos **solo estiman; no instalan herramientas**:
+Estos comandos **solo estiman; no instalan herramientas** (a diferencia de `install`):
 
 ```bash
 ./kali.sh plan headless        # Conjunto oficial sin escritorio
@@ -105,7 +133,7 @@ Estos comandos **solo estiman; no instalan herramientas**:
 Everything con recomendaciones se estimó en 36,23 GiB instalados y 12,76 GiB de
 descarga. El presupuesto añade 2 GiB de margen y debe dejar 20 GiB libres; es una
 comprobación previa, no una cuota. Las cifras pueden cambiar. La instalación
-amplia se decide aparte: algunas herramientas necesitan permisos, hardware,
+amplia se inicia explícitamente con `install`: algunas herramientas necesitan permisos, hardware,
 servicios o interfaz gráfica adicionales. Véase el [diagnóstico](docs/validation.md).
 
 ## Respaldo y eliminación
