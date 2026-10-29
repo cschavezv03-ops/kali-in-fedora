@@ -15,6 +15,29 @@ Both modes start with `setup`. Run these commands from the cloned repository as 
 
 `everything-full` includes APT recommendations. The optional `everything` profile installs the same metapackage **without** recommendations; `headless` and `cli` are other optional tool selections. None of these profiles is installed by `setup`. `./kali.sh plan everything-full` estimates without installing; only `install` installs tools.
 
+## Update an existing installation without reinstalling Everything
+
+This also works for containers created by an older, Spanish-language version of this repository: the language of past script output does not change the container. **Keep the same checkout path, Fedora user and rootless Podman storage.** Do not clone into a new directory, run `remove`, or reinstall Everything just to apply project changes.
+
+```bash
+cd /path/to/kali-in-fedora
+git pull --ff-only          # Obtain the latest scripts and documentation
+./kali.sh status            # Check that this checkout still manages the existing kali
+./kali.sh update            # Apply project fixes and current Minimum requirements in place
+```
+
+`update` refreshes Kali APT indexes, installs any missing Minimum packages (and may update those packages), applies idempotent container fixes, records a local package inventory, and validates persistence. It does **not** pull a new base image, recreate the container, reinstall the Everything metapackage, or upgrade all installed tools. Existing Everything packages, internal files and `lab/` remain. It **does stop and restart Kali during validation**: finish active work first. If a future project change needs a different container configuration that cannot be changed safely in place, the script must reject the container rather than silently replace it.
+
+If `update` reports that the **operation lock is held** after an upgrade from an older checkout, first confirm no installation or validation is in progress. Close any Kali shells and services, run `./kali.sh stop`, then retry `./kali.sh update`. An older `conmon` may have inherited the lock; stopping the container releases it without deleting packages or files. **Do not delete `.state/operation.lock`** or force-remove the container. New launches do not pass the lock to `conmon`. The script also refuses to update or restart when it detects other active container processes; stop your work first.
+
+To **also upgrade the APT packages already installed** (including Everything tools if present), opt in separately:
+
+```bash
+./kali.sh update --packages
+```
+
+This estimates the additional disk space first and runs APT `upgrade --no-remove` in the **same container**, not a new Everything installation. On a large container it can still download many packages and take considerable time; APT may hold back packages requiring removals. It does not change the pinned base image or install newly added optional profile packages. To add a new profile or expand a profile selection later, rerun `./kali.sh install PROFILE` in the same container. Neither command installs host packages. If `status`/`update` rejects an existing container, check its owner, name, original checkout path and audit failures; do not relabel or force-adopt an unrelated container. See [updating and recovery](docs/technical-guide.md#in-place-updates).
+
 ## Requirements and first run
 
 - Fedora **44**, Bash, Python 3, Git (to clone), local **rootless Podman**, `pasta` (Fedora package `passt`), `newuidmap`/`newgidmap` with at least 65,536 subordinate UIDs and GIDs, `flock` (`util-linux`), `getenforce` (`libselinux-utils`), and coreutils (`stat` and `realpath`). SELinux must be Enforcing, with seccomp enabled. The script checks these prerequisites and stops if they are not met; it does **not** install Fedora packages or change host configuration.
@@ -56,10 +79,11 @@ The official `docker.io/kalilinux/kali-rolling` base is pinned by digest in `ima
 | Start / stop the container | `./kali.sh start` / `./kali.sh stop` |
 | Check container status and free space | `./kali.sh status` |
 | Check connectivity, isolation, and persistence | `./kali.sh validate` |
+| Apply project fixes / optionally upgrade installed APT packages | `./kali.sh update` / `./kali.sh update --packages` |
 | Save installed package versions | `./kali.sh inventory` |
 | Show main-process logs / help | `./kali.sh logs` / `./kali.sh help` |
 
-`setup`, `install`, and `validate` stop and restart Kali during validation; **do not run them while work is active inside the container**. Stopping it does not uninstall anything, and it does not start automatically when Fedora boots. `logs` may be empty because the main process is `sleep`; use `.state/` for setup and installation logs.
+`setup`, `install`, `update`, and `validate` stop and restart Kali during validation; **do not run them while work is active inside the container**. Stopping it does not uninstall anything, and it does not start automatically when Fedora boots. `logs` may be empty because the main process is `sleep`; use `.state/` for setup and installation/update logs.
 
 To permanently remove the container, back up anything you need **first**, then run:
 

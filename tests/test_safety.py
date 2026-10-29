@@ -1,7 +1,9 @@
 """Safety regression tests; use a fake engine, never the real Podman storage."""
+import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -49,6 +51,9 @@ import json,os,sys
 a=sys.argv[1:]
 with open(os.environ['TEST_CALLS'],'a') as f: f.write(json.dumps(a)+'\\n')
 assert a.pop(0)=='--remote=false', 'must use local engine'
+try: os.fstat(9)
+except OSError: pass
+else: sys.exit('operation lock descriptor leaked to Podman')
 if a[:1]==['info']:
  if a[-1]=='json': print(json.dumps({'host':{'security':{'rootless':True,'seccompEnabled':True,'selinuxEnabled':True}},'store':{}}))
  elif a[-1]=='{{.Store.GraphRoot}}': print(os.environ['TEST_ROOT'])
@@ -56,7 +61,28 @@ if a[:1]==['info']:
 elif a[:2]==['container','exists']:
  sys.exit(1 if os.environ.get('TEST_MISSING') else 0)
 elif a[:1]==['inspect'] and '--format' not in a:
- print('['+open(os.environ['TEST_FIXTURE']).read()+']')
+  print('['+open(os.environ['TEST_FIXTURE']).read()+']')
+elif a[:1]==['inspect'] and os.environ.get('TEST_UPDATE'):
+  assert a[2]=='{{.State.Status}}'
+  print('running')
+elif a[:1]==['top'] and os.environ.get('TEST_UPDATE'):
+  assert a[1:]==['kali','pid','tty','comm']
+  print('PID TTY COMMAND\\n1 ? sleep')
+  if os.environ.get('TEST_ACTIVE'): print('19 pts/0 bash')
+elif a[:1]==['exec'] and os.environ.get('TEST_UPDATE'):
+  if 'apt-get' in a:
+   command=a[a.index('apt-get')+1:]
+   if '--assume-no' in command:
+    print('Need to get 1 MB of archives.')
+    if 'upgrade' in command and os.environ.get('TEST_APT_FREED'):
+     print('After this operation, 2 MB disk space will be freed.')
+    else: print('After this operation, 2 MB of additional disk space will be used.')
+    print('1 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.')
+    sys.exit(1)
+   assert '-o' in command or '--yes' in command
+  elif 'bash' in a:
+   if '-ceu' in a and 'getcap' in a[-1]: sys.exit(77) # stop before validation
+  else: sys.exit('Unexpected exec: '+repr(a))
 elif a[:1]==['pull']: pass
 elif a[:1]==['create']: sys.exit(77) # stop before any simulated setup mutation
 else: sys.exit('Unexpected mutation or command: '+repr(a))
@@ -72,9 +98,9 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
                     "CONTAINERS_STORAGE_CONF", "CONTAINERS_REGISTRIES_CONF", "PODMAN_USERNS"):
             self.env.pop(key, None)
 
-    def invoke(self, command):
+    def invoke(self, command, *args):
         self.fixture.write_text(json.dumps(self.data))
-        result = subprocess.run(["bash", str(self.repo / "kali.sh"), command],
+        result = subprocess.run(["bash", str(self.repo / "kali.sh"), command, *args],
                                 capture_output=True, text=True, env=self.env,
                                 cwd=self.repo)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -92,6 +118,71 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
         self.assertIn("install everything-full", result.stdout)
         self.assertIn("without\nrecreating kali", result.stdout)
         self.assertFalse(self.calls.exists())
+
+    def test_embedded_python_blocks_compile(self):
+        source = SCRIPT.read_text()
+        blocks = [m.group(1) for m in re.finditer(r"python3 -c '(.*?)'", source, re.S)]
+        blocks += [m.group(1) for m in re.finditer(r"python3 - <<'PY'\n(.*?)\nPY", source, re.S)]
+        self.assertGreater(len(blocks), 5)
+        for number, block in enumerate(blocks):
+            compile(block, f"embedded Python block {number}", "exec")
+
+    def test_update_reuses_existing_container_without_reinstalling_everything(self):
+        self.env["TEST_UPDATE"] = "1"
+        result = self.invoke("update")
+        self.assertIn("Updating the existing kali container in place", result.stdout)
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
+        apt = [call[call.index("apt-get") + 1:] for call in calls if "apt-get" in call]
+        self.assertEqual(sum("--yes" in call for call in apt), 1)
+        self.assertTrue(any("--no-install-recommends" in call and "ca-certificates" in call for call in apt))
+        self.assertFalse(any("kali-linux-everything" in call for call in apt))
+
+    def test_package_upgrade_is_opt_in_and_uses_no_remove(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.env["TEST_APT_FREED"] = "1"
+        self.invoke("update", "--packages")
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        apt = [call[call.index("apt-get") + 1:] for call in calls if "apt-get" in call]
+        self.assertTrue(any("--assume-no" in call and "upgrade" in call for call in apt))
+        self.assertTrue(any("--yes" in call and "--no-remove" in call and "upgrade" in call for call in apt))
+        self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
+        self.assertFalse(any("kali-linux-everything" in call for call in apt))
+
+    def test_update_rejects_foreign_container_before_package_changes(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.data["Config"]["Labels"] = {}
+        self.assertIn("FAIL managed_by_project", self.invoke("update").stdout)
+        self.no_mutations()
+
+    def test_update_does_not_interrupt_an_interactive_shell(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.env["TEST_ACTIVE"] = "1"
+        self.assertIn("Active Kali processes: PID 19 (bash)", self.invoke("update").stdout)
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        self.assertFalse(any(call[0] in ("exec", "stop", "rm", "create") for call in calls))
+
+    def test_update_never_creates_a_missing_container(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.env["TEST_MISSING"] = "1"
+        self.assertIn("Run ./kali.sh setup first", self.invoke("update").stdout)
+        self.no_mutations()
+
+    def test_update_does_not_bypass_an_existing_operation_lock(self):
+        self.env["TEST_UPDATE"] = "1"
+        state = self.repo / ".state"
+        state.mkdir(mode=0o700)
+        with (state / "operation.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.invoke("update")
+        self.assertIn("Do not delete the lock file", result.stderr)
+        self.no_mutations()
+
+    def test_update_rejects_unknown_options(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.assertIn("Usage: ./kali.sh update [--packages]", self.invoke("update", "--force").stdout)
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        self.assertFalse(any(call[0] in ("pull", "create", "rm", "exec") for call in calls))
 
     def test_foreign_container_is_not_adopted_or_stopped(self):
         self.data["Config"]["Labels"] = {}

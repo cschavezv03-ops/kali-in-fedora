@@ -17,7 +17,9 @@ CAPS=(CHOWN DAC_OVERRIDE FOWNER FSETID SETGID SETUID SETFCAP SYS_CHROOT)
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '\n%s\n' "$*"; }
 run() { printf '+'; printf ' %q' "$@"; printf '\n'; "$@"; }
-pm() { podman --remote=false "$@"; }
+# Never pass the operation-lock descriptor to Podman: its long-lived conmon
+# child would otherwise keep the flock held after setup/update exits.
+pm() { podman --remote=false "$@" 9>&-; }
 trap 'printf "ERROR: operation failed at line %s; no container was removed.\n" "$LINENO" >&2' ERR
 
 help_text() {
@@ -26,6 +28,7 @@ Usage: ./kali.sh COMMAND
   inspect              Inspect the host without installing or creating containers
   setup                Create/reuse kali and install Minimum only
   install everything-full  Add Everything (including APT recommendations) to existing kali
+  update [--packages]  Apply fixes in place; optionally upgrade APT packages; restarts kali
   validate             Check security, HTTPS and persistence; restarts kali
   start | stop         Start or stop kali
   shell                Enter Bash; exiting does not stop or remove kali
@@ -38,7 +41,8 @@ Usage: ./kali.sh COMMAND
 
 Profiles: cli, headless, everything (no APT recommendations), everything-full
 (with recommendations). setup installs only Minimum; install adds tools without
-recreating kali. Podman and other Fedora packages are never installed automatically.
+recreating kali. update never reinstalls Everything or replaces the container.
+Podman and other Fedora packages are never installed automatically.
 EOF
 }
 
@@ -180,6 +184,20 @@ start_container() {
     fi
 }
 
+ensure_no_active_work() {
+    pm top "$NAME" pid tty comm | python3 -c '
+import sys
+rows=sys.stdin.read().splitlines()
+if len(rows)<2: sys.exit("Cannot verify container processes; refusing to interrupt active work.")
+active=[]
+for row in rows[1:]:
+ fields=row.split(None,2)
+ if len(fields)!=3 or not fields[0].isdigit(): sys.exit("Unexpected Podman process list; refusing to interrupt active work.")
+ if fields[0]!="1": active.append(f"PID {fields[0]} ({fields[2]})")
+if active: sys.exit("Active Kali processes: "+", ".join(active)+". Close shells and services before an update or validation; nothing was stopped.")
+'
+}
+
 prepare_image() {
     if [[ -e "$LOCK" || -L "$LOCK" ]]; then
         [[ -f "$LOCK" && ! -L "$LOCK" ]] || die 'image.lock must be a regular file.'
@@ -205,12 +223,18 @@ apt_plan() {
     shift
     local raw="$STATE/plan-$profile.txt"
     local recommend_flag=--no-install-recommends recommends=false
+    local apt_args=(--assume-no --no-remove)
     if [[ "$profile" == everything-full ]]; then
         recommend_flag=--install-recommends
         recommends=true
     fi
+    if [[ "$profile" == upgrade ]]; then
+        apt_args+=(upgrade)
+    else
+        apt_args+=("$recommend_flag" install "$@")
+    fi
     pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
-        apt-get --assume-no --no-remove "$recommend_flag" install "$@" > "$raw" 2>&1 || rc=$?
+        apt-get "${apt_args[@]}" > "$raw" 2>&1 || rc=$?
     [[ $rc == 0 || $rc == 1 ]] || { cat -- "$raw"; die 'APT could not resolve this profile; nothing was installed.'; }
     python3 -c '
 import json,pathlib,re,sys
@@ -221,8 +245,9 @@ def amount(s):
   return int(float(m[1])*{"B":1,"kB":10**3,"MB":10**6,"GB":10**9,"TB":10**12}[m[2]])
 download=re.search(r"Need to get (.+?) of archives",text)
 installed=re.search(r"After this operation, ([0-9.,]+\s*[kMGT]?B) of additional disk space will be used",text)
+freed=re.search(r"After this operation, ([0-9.,]+\s*[kMGT]?B) disk space will be freed",text)
 unchanged=re.search(r"^0 upgraded, 0 newly installed, 0 to remove",text,re.M) is not None
-if not installed and not unchanged:
+if not installed and not freed and not unchanged:
   print(text);sys.exit("Could not obtain a reliable APT estimate; stopping.")
 d=amount(download[1].split("/")[-1]) if download else 0
 n=amount(installed[1]) if installed else 0
@@ -246,6 +271,7 @@ validate() {
     note 'Validating Kali (stops and restarts the container; does not delete files)'
     require_managed
     start_container
+    ensure_no_active_work
     pm exec "$NAME" bash -ceu '
         . /etc/os-release
         test "$ID" = kali
@@ -319,6 +345,7 @@ setup() {
     fi
     private_dir "$STATE"
     start_container
+    ensure_no_active_work
     apt_update
     apt_plan minimum "${MINIMUM[@]}"
     local budget
@@ -327,6 +354,7 @@ setup() {
     note 'Installing Minimum inside Kali (ca-certificates, curl, iproute2, bind9-dnsutils)'
     run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --yes --no-remove --no-install-recommends install "${MINIMUM[@]}"
+    apply_container_fixes
     validate
 }
 
@@ -355,11 +383,7 @@ plan() {
     printf 'This plan does not install tools or guarantee compatibility. Run install explicitly to add this profile.\n'
 }
 
-install_tools() {
-    local profile=${1:-}
-    [[ -n "$profile" ]] || die 'Specify a profile: install everything-full, everything, headless or cli.'
-    plan "$profile"
-    note "Installing $profile inside the existing kali container; this keeps your current packages and files"
+ensure_service_policy() {
     # Prevent package postinst scripts from starting network services by default.
     # The official image already ships policy-rc.d returning 101; never replace it.
     pm exec "$NAME" bash -c '
@@ -370,6 +394,66 @@ install_tools() {
         /usr/sbin/policy-rc.d kali-in-fedora start >/dev/null 2>&1
         test "$?" -eq 101
     ' || die 'The service-start policy does not block automatic starts; review it before installing.'
+}
+
+apply_container_fixes() {
+    # Keep fixes idempotent: this runs on existing Minimum and Everything containers
+    # after updates, including containers created with older versions of this script.
+    # Never rewrite an unrelated container or reset its installed package selection.
+    # Kali's Nmap file capabilities conflict with no-new-privileges. An APT update
+    # may restore them, so check on every run rather than only after first install.
+    pm exec "$NAME" bash -ceu '
+        if test -e /usr/lib/nmap/nmap; then
+            if test -n "$(getcap /usr/lib/nmap/nmap)"; then
+                setcap -r /usr/lib/nmap/nmap
+            fi
+            test -z "$(getcap /usr/lib/nmap/nmap)"
+            nmap --unprivileged --version | head -n 1
+        fi
+    '
+}
+
+update_container() {
+    local option=${1:-}
+    [[ -z "$option" || "$option" == --packages ]] || die 'Usage: ./kali.sh update [--packages]'
+    require_managed
+    private_dir "$STATE"
+    note 'Updating the existing kali container in place; no image pull, container replacement or Everything reinstall'
+    start_container
+    ensure_no_active_work
+    check_space $((2 * 1024 * 1024 * 1024))
+    apt_update
+    apt_plan minimum "${MINIMUM[@]}"
+    local budget
+    budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-minimum.json")
+    check_space "$budget"
+    ensure_service_policy
+    run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
+        apt-get --yes --no-remove --no-install-recommends install "${MINIMUM[@]}"
+    if [[ "$option" == --packages ]]; then
+        note 'Upgrading installed Kali APT packages in place; no package removals or Everything reinstall'
+        apt_plan upgrade
+        budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-upgrade.json")
+        check_space "$budget"
+        run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
+            apt-get --yes --no-remove -o Dpkg::Use-Pty=0 upgrade
+    else
+        note 'Other installed APT packages were not upgraded; use update --packages to upgrade them explicitly.'
+    fi
+    apply_container_fixes
+    validate
+    note 'In-place update complete; installed tool profiles and container files were kept.'
+}
+
+install_tools() {
+    local profile=${1:-}
+    [[ -n "$profile" ]] || die 'Specify a profile: install everything-full, everything, headless or cli.'
+    require_managed
+    start_container
+    ensure_no_active_work
+    plan "$profile"
+    note "Installing $profile inside the existing kali container; this keeps your current packages and files"
+    ensure_service_policy
     pm exec -i "$NAME" debconf-set-selections <<'EOF'
 wireshark-common wireshark-common/install-setuid boolean false
 macchanger macchanger/automatically_run boolean false
@@ -378,21 +462,19 @@ EOF
     [[ "$profile" != everything-full ]] || recommend_flag=--install-recommends
     run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --yes --no-remove "$recommend_flag" -o Dpkg::Use-Pty=0 install "${PACKAGES[@]}"
-    # Kali's Nmap package carries file capabilities for raw sockets. They are
-    # incompatible with this container's no-new-privileges and dropped caps,
-    # and are unnecessary for the supported TCP connect scan. Keep the
-    # container policy intact and remove only those file capabilities.
-    pm exec "$NAME" bash -ceu 'if test -n "$(getcap /usr/lib/nmap/nmap)"; then setcap -r /usr/lib/nmap/nmap; fi; test -z "$(getcap /usr/lib/nmap/nmap)"; nmap --unprivileged --version | head -n 1'
+    apply_container_fixes
     inventory
     validate
-    pm exec "$NAME" bash -ceu '
-        test -z "$(dpkg --audit)"
-        nmap --version | head -n 1
-        for tool in nmap tcpdump tshark sqlmap nikto gobuster ffuf python3 gdb yara; do
-            command -v "$tool" >/dev/null
-            printf "Available: %s\n" "$tool"
-        done
-    '
+    pm exec "$NAME" dpkg-query -W "${PACKAGES[@]}"
+    if [[ "$profile" == everything || "$profile" == everything-full ]]; then
+        pm exec "$NAME" bash -ceu '
+            test -z "$(dpkg --audit)"
+            for tool in nmap tcpdump tshark sqlmap nikto gobuster ffuf python3 gdb yara; do
+                command -v "$tool" >/dev/null
+                printf "Available: %s\n" "$tool"
+            done
+        '
+    fi
     note 'Installation complete. Services, graphical tools and hardware-dependent tools may need separate setup.'
 }
 
@@ -418,12 +500,12 @@ case "$command" in
 esac
 prerequisites
 case "$command" in
-    setup|validate|plan|install)
+    setup|validate|plan|install|update)
         command -v flock >/dev/null || die 'Missing flock (util-linux).'
         private_dir "$STATE"
         [[ ! -L "$STATE/operation.lock" ]] || die 'The operation lock cannot be a symbolic link.'
         exec 9>"$STATE/operation.lock"
-        flock -n 9 || die 'Another package operation or validation is in progress.'
+        flock -n 9 || die 'The operation lock is held. If another installation or validation is running, wait for it. If no operation is running, an older conmon may have inherited the lock: close active Kali sessions, run ./kali.sh stop, then retry. Do not delete the lock file.'
         ;;
 esac
 case "$command" in
@@ -437,6 +519,7 @@ case "$command" in
     inventory) require_managed; start_container; inventory;;
     plan) plan "${2:-cli}";;
     install) install_tools "${2:-}" 2>&1 | tee "$STATE/install-$(date -u +%Y%m%dT%H%M%SZ).log";;
+    update) [[ $# -le 2 ]] || die 'Usage: ./kali.sh update [--packages]'; update_container "${2:-}" 2>&1 | tee "$STATE/update-$(date -u +%Y%m%dT%H%M%SZ).log";;
     remove) remove_container;;
     *) help_text; die 'Unknown command.';;
 esac
