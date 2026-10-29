@@ -1,169 +1,97 @@
-# Validación del entorno mínimo
+# Validación de Kali Everything
 
-Fecha de ejecución: 28 de octubre de 2026, zona America/Guayaquil.
-Resultados de una máquina Fedora 44 x86_64; no son una garantía para otros equipos.
-No se incluyen rutas personales, credenciales, direcciones de red ni registros
-completos. Los informes originales permanecen en `.state/`, fuera de Git.
+Resultados observados en Fedora 44 x86_64 el 28 de octubre de 2026
+(zona America/Guayaquil). Los valores corresponden a este equipo y a sus índices
+Rolling en esa fecha; no garantizan idénticas resoluciones en otra instalación.
+No se versionan perfiles VPN, direcciones privadas, archivos de laboratorio ni
+logs completos.
 
-## Inspección y preparación
+## Resultado de la instalación
 
-| Comprobación | Resultado observado |
-| --- | --- |
-| Fedora | 44 Workstation |
-| Kernel del anfitrión | `7.2.11-200.fc44.x86_64` |
-| Podman | `5.8.9`, ya instalado; no se reinstaló |
-| Rootless | Confirmado, con rangos subordinados disponibles |
-| Red | netavark / pasta |
-| Almacenamiento | overlay |
-| SELinux / seccomp / firewalld | Enforcing / habilitado / activo |
-| Nombre `kali` antes de comenzar | Disponible |
-| Espacio antes de la preparación | Aproximadamente 85,00 GiB libres |
+Se instaló en el contenedor persistente `kali` el metapaquete oficial
+`kali-linux-everything` con recomendaciones APT, a partir de la imagen
+`docker.io/kalilinux/kali-rolling@sha256:cd030992fed90891eb7de0e2b1b7b1972ab46fcfaf75d969af0b94304214b6e3`.
 
-La inspección inicial ejecutada dentro del sandbox del agente no podía consultar
-Podman ni el bus de systemd y mostraba un estado SELinux distinto. Los resultados
-de esta tabla se comprobaron fuera del sandbox, como usuario normal y sin sudo.
+| Medición | Resultado observado |
+| --- | ---: |
+| Versión del metapaquete | `2026.4.2` |
+| Paquetes con estado instalado (`ii`) | 4.315 |
+| Capa escribible del contenedor | 39.996.255.827 bytes, aproximadamente 37,25 GiB |
+| Imagen base | 250.861.141 bytes, aproximadamente 239 MiB |
+| Tamaño total lógico del rootfs | 40.247.116.968 bytes, aproximadamente 37,49 GiB |
+| Espacio libre informado por Podman | 61,81 GiB |
+| Espacio libre del filesystem del proyecto | 62 GiB (redondeado por `df`) |
+| Reserva mínima requerida por el instalador | 20 GiB |
 
-Se usó la imagen oficial `docker.io/kalilinux/kali-rolling:latest`, fijada en
-`image.lock` como:
+El plan previo para `everything-full` estimó 4.192 paquetes nuevos, 12,76 GiB
+de descarga y 36,23 GiB adicionales. El tamaño real incluye la capa inicial,
+índices y efectos de la instalación; no es una cuota. Los bloques físicos pueden
+diferir por el filesystem/snapshots. El proceso terminó y ya no mantiene el lock
+de APT ni el lock de operaciones.
 
-```text
-docker.io/kalilinux/kali-rolling@sha256:cd030992fed90891eb7de0e2b1b7b1972ab46fcfaf75d969af0b94304214b6e3
-```
+La instalación no activó la mayoría de servicios automáticamente: el script
+comprueba `policy-rc.d` para impedirlo. Tener un paquete instalado no garantiza
+que su servicio, base de datos, GUI, firmware o hardware estén configurados.
+Algunas herramientas pueden necesitar pasos individuales.
 
-No se instalaron paquetes de Fedora ni se modificaron sus repositorios,
-configuraciones de seguridad o red. Se crearon `lab/`, `.state/`, la imagen local
-y el contenedor persistente. El script y la documentación están versionados.
+## Pruebas realizadas
 
-## Paquetes mínimos
+- `kali-linux-everything` y herramientas representativas (`nmap`, `tcpdump`,
+  `tshark`, `sqlmap`, `nikto`, `gobuster`, `ffuf`, `gdb`, `yara`, `python3`)
+  figuran instaladas y sus ejecutables —salvo la excepción descrita abajo— están
+  disponibles en `PATH`.
+- `dpkg --audit` no reportó paquetes incompletos.
+- Kali Rolling y APT respondieron. HTTPS con verificación TLS a `kali.org` y
+  resolución DNS desde Kali funcionaron.
+- `ip -brief link show lo` funcionó.
+- Nmap 7.991 ejecutó `--unprivileged -sT -Pn -p 1-5 127.0.0.1`; el escaneo
+  TCP connect de loopback concluyó sin sockets raw y reportó los cinco puertos
+  cerrados.
+- El paquete de Nmap instala `cap_net_bind_service,cap_net_admin,cap_net_raw=eip`
+  en `/usr/lib/nmap/nmap`. Esa file capability impedía ejecutar el ELF bajo
+  `no-new-privileges` con las capacidades de contenedor reducidas. Se quitaron
+  solo las file capabilities de ese binario dentro de Kali. Nmap volvió a
+  ejecutarse con `--unprivileged`, sin `NET_RAW` ni `NET_ADMIN`. El instalador
+  automatiza esta corrección tras futuras instalaciones del perfil; una
+  actualización manual de Nmap puede requerir repetir
+  `podman exec kali setcap -r /usr/lib/nmap/nmap`.
+- La auditoría del contenedor pasó: imagen oficial fijada por digest, rootless,
+  sin privileged, persistente, red pasta, sin puertos publicados ni dispositivos
+  extra, PID/IPC privados, `no-new-privileges`, capacidades limitadas, SELinux y
+  seccomp conservados, y un solo bind mount `lab/` con permisos 0700.
+- Se detuvo e inició `kali`. `kali-linux-everything` siguió instalado y se
+  conservaron archivos temporales de prueba tanto en la capa del contenedor
+  como en `/lab`; luego se retiraron esos archivos.
+- El escaneo fue solo a loopback. No se conectó a una VPN real ni se escaneó HTB.
 
-APT descargó 9517 kB y calculó 27,0 MB adicionales para 44 paquetes nuevos,
-incluidas dependencias. No se realizó una actualización general de Kali.
-Los cuatro paquetes solicitados quedaron así:
+## Advertencias y límites comprobados
 
-| Paquete | Versión comprobada |
-| --- | --- |
-| `ca-certificates` | `20260816+nmu1` |
-| `curl` | `8.22.0-1` |
-| `iproute2` | `7.2.0-1` |
-| `bind9-dnsutils` | `1:9.20.29-1` |
+- `/usr/bin/sleep` como PID 1 no atendió SIGTERM. Podman agotó el timeout y
+  recurrió a SIGKILL. Stop/start y persistencia funcionaron; cierra servicios con
+  estado desde su interfaz antes de parar el contenedor.
+- El modo rootless no proporciona sockets raw ni administración de red. Nmap
+  TCP connect sirve para enumeración TCP autorizada; SYN/UDP, captura en vivo del
+  anfitrión, Wi-Fi monitor/inyección, Bluetooth, SDR y GPU no quedaron validados.
+- La instalación Everything incluye herramientas que pueden requerir GUI,
+  hardware, servicios, bases de datos, credenciales/API o ajustes adicionales.
+  No se afirma que todos los programas hayan sido ejecutados.
+- Fedora ya tenía OpenVPN y el plugin OpenVPN de NetworkManager. Se dejó el
+  soporte documentado/preparado, pero no se importó ni activó un perfil personal,
+  no se añadieron reglas de firewall y no se probó conectividad a HTB porque no
+  se proporcionaron un perfil y un objetivo para ello.
+- No se probó reinicio físico de Fedora, exportación/restauración, otras
+  arquitecturas ni reconstrucción con futuros índices Rolling.
 
-Kali se identifica como `Kali GNU/Linux Rolling`; APT es `3.3.3 (amd64)`.
-`bind9-dnsutils` es el paquete instalado que proporciona `dig`; el nombre
-`dnsutils` no aparece como un paquete instalado en esta versión.
-El inventario local completo contiene 123 paquetes instalados.
-
-## Verificaciones realizadas
-
-- Auditoría de opciones de creación: rootless, sin privileged, sin eliminación
-  automática, sin puertos publicados ni dispositivos adicionales.
-- Red pasta, namespaces privados y capacidades limitadas, sin NET_ADMIN/NET_RAW.
-- `NoNewPrivs=1` y `Seccomp=2` dentro del contenedor.
-- Mapeo de UID verificado desde Fedora: UID 0 interno corresponde al usuario
-  normal del anfitrión. Consultar únicamente el mapa desde el namespace anidado
-  no demuestra ese mapeo con el anfitrión.
-- Un único montaje de usuario, `lab/` a `/lab`, con modo `0700`. Su contexto
-  SELinux coincide con la etiqueta privada del montaje del contenedor.
-- `dpkg --audit` sin incidencias; consulta de versiones de los componentes mínimos.
-- Acceso HTTPS a la web oficial de Kali con verificación TLS y resolución DNS.
-- Consulta DNS mediante `dig`; diagnóstico de loopback mediante `ip`.
-- Archivo compartido visible desde Fedora, propiedad del usuario normal y modo
-  `0600`.
-- Un archivo interno y otro compartido conservaron su contenido tras detener e
-  iniciar; los cuatro paquetes permanecieron instalados. Solo se retiraron los
-  archivos temporales creados por esas pruebas.
-- Repetición de la preparación sin reinstalar ni añadir paquetes ya presentes.
-- Entrada interactiva con `./kali.sh shell` en `/lab`, umask `0077`; salir de Bash
-  dejó `kali` en estado `running`. Consulta de estado y registros sin errores.
-- Siete pruebas de regresión con motor simulado para proteger contenedores ajenos,
-  montajes, red, enlaces, reserva de espacio, confirmación de borrado y nombre.
-- Sintaxis Bash y revisión de whitespace de Git.
-
-Advertencia observada: al ser `sleep infinity` el PID 1, no atendió SIGTERM.
-Podman esperó 10 segundos y terminó el proceso con SIGKILL. El stop/start y la
-persistencia pasaron. Esta limitación está documentada; no se eliminó ni recreó
-el contenedor. Antes de detener futuros servicios con estado, hay que cerrarlos
-de forma ordenada desde sus propias herramientas.
-
-## Almacenamiento después del mínimo
-
-| Medida | Resultado |
-| --- | --- |
-| Imagen base, tamaño lógico según Podman | 250861141 bytes, aproximadamente 239,24 MiB |
-| Capa escribible, incluidos índices APT | 62763659 bytes, aproximadamente 59,86 MiB |
-| Sistema de archivos total lógico | 313624800 bytes, aproximadamente **0,292 GiB** |
-| Libre en el sistema de archivos de Podman | Aproximadamente **84,89 GiB** |
-| Reserva exigida para Fedora | **20 GiB** |
-
-Los tamaños lógicos no equivalen a ocupación física exacta en Btrfs. El espacio
-libre también depende de otras aplicaciones. No se ha atribuido al contenedor
-toda la variación del disco durante el trabajo. La consulta de estado al cerrar
-la validación mostró **84,81 GiB** libres; la tabla de planes usa la medición de
-84,89 GiB tomada al generarlos.
-
-## Estimaciones actuales de APT: no instaladas
-
-Estimaciones adicionales respecto al mínimo, tomadas de los índices disponibles
-durante la ejecución. Los perfiles `headless`, `cli` y `everything` deshabilitan
-recomendaciones; `everything-full` sí las incluye. Todos impiden eliminaciones.
-
-| Perfil | Paquetes nuevos | Descarga GiB | Instalado adicional GiB | Presupuesto temporal GiB | Libre tras presupuesto GiB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `headless` | 1268 | 1,41 | 5,81 | 9,23 | 75,66 |
-| `cli` temático | 1665 | 2,94 | 8,18 | 13,12 | 71,77 |
-| `everything` | 3340 | 11,55 | 32,32 | 45,87 | 39,02 |
-| `everything-full` | 4192 | 12,76 | 36,23 | 50,99 | 33,90 |
-
-Los cuatro planes incluyen además tres actualizaciones necesarias y cero
-eliminaciones. El presupuesto temporal es instalación + descarga + 2 GiB de
-margen; no es una cuota ni una predicción exacta del pico de uso. Los tamaños de
-APT se convierten de unidades decimales a GiB. Sin conservar archivos descargados,
-el espacio libre tras la instalación sería mayor que la última columna, pero no
-se ha ejecutado una instalación amplia para medirlo.
-
-Los cuatro perfiles pasan la comprobación aritmética de conservar 20 GiB, con el
-disco observado. **Ninguno se instaló ni está aprobado para instalación.** Los
-planes no equivalen a una prueba de funcionamiento de sus miles de paquetes.
-
-`headless` ofrece un conjunto oficial orientado a terminal; `cli` agrupa seis
-metapaquetes para información/OSINT, web, tráfico, forense, criptografía y análisis
-inverso. Ambos pueden incluir servicios o dependencias gráficas. Everything
-también instala herramientas de hardware que el contenedor no puede aprovechar
-con los permisos actuales. La selección final requiere revisar esa utilidad.
-
-## Comandos principales ejecutados
+## Comandos de verificación principales
 
 ```bash
-./kali.sh inspect
-./kali.sh setup
-./kali.sh validate
-./kali.sh plan headless
-./kali.sh plan cli
-./kali.sh plan everything
-./kali.sh plan everything-full
-./kali.sh shell
 ./kali.sh status
-./kali.sh logs
-python3 -m unittest discover -s tests -v
-bash -n kali.sh
-git diff --check
+./kali.sh inventory
+podman --remote=false exec kali dpkg-query -W kali-linux-everything
+podman --remote=false exec kali bash -c 'dpkg --audit'
+podman --remote=false exec kali nmap --unprivileged -sT -Pn -p 1-5 127.0.0.1
 ```
 
-También se consultaron metadatos reducidos con `podman info`, `podman inspect
---size`, `podman image inspect`, espacio libre y el contexto SELinux de `lab`.
-La entrada interactiva y los comandos de estado/registros también se comprobaron;
-no se ejecutaron herramientas contra objetivos de terceros.
-
-## Pendiente o fuera del alcance verificado
-
-- Reiniciar físicamente Fedora o iniciar automáticamente el contenedor al arrancar.
-- Instalar o probar los perfiles amplios; identificar todas sus herramientas
-  compatibles. No se promete que todas funcionen en rootless.
-- Interfaz gráfica, hardware, Wi-Fi monitor, inyección, Bluetooth, SDR y GPU.
-- Captura de tráfico del anfitrión, sockets raw y administración de interfaces.
-- Configurar servicios y bases de datos de herramientas adicionales.
-- Exportar y restaurar una copia de seguridad, o ejecutar una eliminación real.
-- Otras máquinas, arquitecturas y reconstrucciones con futuros índices Rolling.
-
-Referencias: [imagen oficial](https://www.kali.org/docs/containers/official-kalilinux-docker-images/),
-[metapaquetes](https://www.kali.org/docs/general-use/metapackages/) y
-[tamaños históricos](https://www.kali.org/docs/installation/installation-sizes/).
+La instalación se realizó mediante `./kali.sh install everything-full` tras
+estimar dependencias y comprobar que se conservaba la reserva de 20 GiB. Los
+registros locales están en `.state/` y no se publican.

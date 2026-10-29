@@ -30,7 +30,8 @@ sudo dnf --repo=fedora --repo=updates install podman passt shadow-utils fuse-ove
 con un stop/start. Se puede repetir sin reinstalar paquetes ya presentes.
 Si existe un `kali` ajeno o incompatible, se detiene sin sobrescribirlo.
 
-Para instalar todas las herramientas después del mínimo:
+El perfil completo con recomendaciones APT ya está instalado en este equipo.
+Para reproducir la instalación en otro Fedora 44, después de revisar el espacio:
 
 ```bash
 ./kali.sh install everything-full
@@ -131,9 +132,11 @@ Estos comandos **solo estiman; no instalan herramientas** (a diferencia de `inst
 ```
 
 Everything con recomendaciones se estimó en 36,23 GiB instalados y 12,76 GiB de
-descarga. El presupuesto añade 2 GiB de margen y debe dejar 20 GiB libres; es una
-comprobación previa, no una cuota. Las cifras pueden cambiar. La instalación
-amplia se inicia explícitamente con `install`: algunas herramientas necesitan permisos, hardware,
+descarga. La capa escribible medida tras instalarlo ocupa cerca de 37,25 GiB,
+con 61,73 GiB libres al cerrar la validación (61,81 GiB tras la primera
+instalación). El presupuesto añade 2 GiB de margen y debe dejar 20 GiB libres;
+es una comprobación previa, no una cuota.
+Las cifras pueden cambiar. Algunas herramientas necesitan permisos, hardware,
 servicios o interfaz gráfica adicionales. Véase el [diagnóstico](docs/validation.md).
 
 ## Respaldo y eliminación

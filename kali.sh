@@ -378,6 +378,11 @@ EOF
     [[ "$profile" != everything-full ]] || recommend_flag=--install-recommends
     run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --yes --no-remove "$recommend_flag" -o Dpkg::Use-Pty=0 install "${PACKAGES[@]}"
+    # Kali's Nmap package carries file capabilities for raw sockets. They are
+    # incompatible with this container's no-new-privileges and dropped caps,
+    # and are unnecessary for the supported TCP connect scan. Keep the
+    # container policy intact and remove only those file capabilities.
+    pm exec "$NAME" bash -ceu 'if test -n "$(getcap /usr/lib/nmap/nmap)"; then setcap -r /usr/lib/nmap/nmap; fi; test -z "$(getcap /usr/lib/nmap/nmap)"; nmap --unprivileged --version | head -n 1'
     inventory
     validate
     pm exec "$NAME" bash -ceu '
