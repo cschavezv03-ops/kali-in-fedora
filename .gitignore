@@ -1,0 +1,18 @@
+# Material de laboratorio: nunca publicar capturas, evidencias ni credenciales.
+/lab/
+/.state/
+/backups/
+*.log
+*.tar
+*.tar.gz
+*.oci
+*.pcap
+*.pcapng
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+__pycache__/
+.DS_Store
+*~
