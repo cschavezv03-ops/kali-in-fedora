@@ -2,6 +2,8 @@
 
 The optional OpenVPN connection runs **on Fedora** under NetworkManager; tools run in Kali. This avoids granting Kali `NET_ADMIN`, `NET_RAW`, TUN devices or host networking. It is not installed or activated by `./kali.sh setup`.
 
+`./htb.sh status`, `check` and `scan` recognize **only a profile imported by this helper**. A VPN connected separately on Fedora may work for ordinary Kali TCP traffic but will not appear as the project's VPN; do not import or replace a profile just to bypass a route check. To diagnose an independently managed VPN, confirm the Fedora route and test an authorized open TCP port from Fedora and Kali. In Kali use `nmap --unprivileged -sT -Pn` rather than Nmap's default raw-socket scan; `./kali.sh shell` sets `NMAP_UNPRIVILEGED=1` for new shells.
+
 ## Prepare and connect
 
 1. Download your personal profile from [Connect to HTB](https://help.hackthebox.com/en/articles/5185687-introduction-to-lab-access). Keep it outside this repository and `lab/`.
@@ -35,6 +37,8 @@ Replace `TARGET_IP` with a private IPv4 address assigned to your authorized lab 
 ```
 
 `check` requires the selected VPN to be active and Fedora's route to the target to use its interface and VPN source address. It attempts a TCP connection to that port from both Fedora and Kali; a closed or filtered port cannot establish connectivity. `scan` checks the Fedora route and runs `nmap --unprivileged -sT -Pn -sV --reason` inside Kali. Install Everything or a suitable tool profile first; Minimum does not include Nmap. TCP connect works without raw sockets. `-Pn` skips ping discovery and does not prove a target is up; SYN/UDP scans and OS detection are not requested. Route checks are not a kill switch; keep the VPN active. If Fedora connects but Kali cannot, inspect `pasta`, routes and MTU. Restarting Kali after connecting may refresh copied networking but interrupts work and is not an automatic fix.
+
+If **Fedora also reports `No route to host`**, verify the lab machine's current address, power/state and VPN network in the provider's interface before changing Kali. A `tracepath` ending in `!H` from the VPN gateway means the gateway reports the target unreachable; changing container capabilities will not resolve that upstream failure. Only troubleshoot `pasta` as a separate problem once Fedora itself can connect to a known open port.
 
 ## Return connections: TCP relay
 

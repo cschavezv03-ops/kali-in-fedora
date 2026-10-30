@@ -11,6 +11,7 @@ import unittest
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "kali.sh"
+APT_PLAN = SCRIPT.parent / "lib" / "apt_plan.py"
 
 
 class SafetyTests(unittest.TestCase):
@@ -23,6 +24,8 @@ class SafetyTests(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         shutil.copy2(SCRIPT, self.repo / "kali.sh")
+        (self.repo / "lib").mkdir()
+        shutil.copy2(APT_PLAN, self.repo / "lib" / "apt_plan.py")
         self.lab = self.repo / "lab"
         self.lab.mkdir(mode=0o700)
         self.calls = self.base / "calls.jsonl"
@@ -66,20 +69,21 @@ elif a[:1]==['inspect'] and os.environ.get('TEST_UPDATE'):
   assert a[2]=='{{.State.Status}}'
   print('running')
 elif a[:1]==['top'] and os.environ.get('TEST_UPDATE'):
-  assert a[1:]==['kali','pid','tty','comm']
-  print('PID TTY COMMAND\\n1 ? sleep')
-  if os.environ.get('TEST_ACTIVE'): print('19 pts/0 bash')
+  assert a[1:]==['kali','pid','state','tty','comm']
+  print('PID STATE TTY COMMAND\\n1 S ? sleep\\n66 Z ? sh')
+  if os.environ.get('TEST_ACTIVE'): print('19 S pts/0 bash')
 elif a[:1]==['exec'] and os.environ.get('TEST_UPDATE'):
   if 'apt-get' in a:
    command=a[a.index('apt-get')+1:]
-   if '--assume-no' in command:
-    print('Need to get 1 MB of archives.')
-    if 'upgrade' in command and os.environ.get('TEST_APT_FREED'):
-     print('After this operation, 2 MB disk space will be freed.')
-    else: print('After this operation, 2 MB of additional disk space will be used.')
-    print('1 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.')
-    sys.exit(1)
+   if '--simulate' in command:
+    if 'upgrade' in command: print('1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.')
+    else: print('0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.')
+    print('Inst iputils-ping (3:20250605-1 kali-rolling [amd64])')
+    sys.exit(0)
    assert '-o' in command or '--yes' in command
+  elif 'apt-cache' in a:
+   assert a[a.index('apt-cache')+1]=='show'
+   print('Package: iputils-ping\\nVersion: 3:20250605-1\\nInstalled-Size: 193\\nSize: 52000')
   elif 'bash' in a:
    if '-ceu' in a and 'getcap' in a[-1]: sys.exit(77) # stop before validation
   else: sys.exit('Unexpected exec: '+repr(a))
@@ -135,16 +139,40 @@ else: sys.exit('Unexpected mutation or command: '+repr(a))
         self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
         apt = [call[call.index("apt-get") + 1:] for call in calls if "apt-get" in call]
         self.assertEqual(sum("--yes" in call for call in apt), 1)
+        self.assertTrue(any("--simulate" in call for call in apt))
+        self.assertFalse(any("--assume-no" in call for call in apt))
         self.assertTrue(any("--no-install-recommends" in call and "ca-certificates" in call for call in apt))
         self.assertFalse(any("kali-linux-everything" in call for call in apt))
 
+    def test_plan_simulates_without_installing_packages(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.fixture.write_text(json.dumps(self.data))
+        result = subprocess.run(["bash", str(self.repo / "kali.sh"), "plan", "headless"],
+                                capture_output=True, text=True, env=self.env, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        apt = [call[call.index("apt-get") + 1:] for call in calls if "apt-get" in call]
+        self.assertTrue(any("--simulate" in call for call in apt))
+        self.assertFalse(any("--yes" in call or "--assume-no" in call for call in apt))
+        self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
+
+    def test_shell_uses_unprivileged_nmap_defaults(self):
+        self.env["TEST_UPDATE"] = "1"
+        self.fixture.write_text(json.dumps(self.data))
+        result = subprocess.run(["bash", str(self.repo / "kali.sh"), "shell"],
+                                capture_output=True, text=True, env=self.env, cwd=self.repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
+        guest = next(call for call in calls if call[0] == "exec")
+        self.assertIn("NMAP_UNPRIVILEGED=1", guest)
+        self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
+
     def test_package_upgrade_is_opt_in_and_uses_no_remove(self):
         self.env["TEST_UPDATE"] = "1"
-        self.env["TEST_APT_FREED"] = "1"
         self.invoke("update", "--packages")
         calls = [json.loads(line)[1:] for line in self.calls.read_text().splitlines()]
         apt = [call[call.index("apt-get") + 1:] for call in calls if "apt-get" in call]
-        self.assertTrue(any("--assume-no" in call and "upgrade" in call for call in apt))
+        self.assertTrue(any("--simulate" in call and "upgrade" in call for call in apt))
         self.assertTrue(any("--yes" in call and "--no-remove" in call and "upgrade" in call for call in apt))
         self.assertFalse(any(call[0] in ("pull", "create", "rm", "stop") for call in calls))
         self.assertFalse(any("kali-linux-everything" in call for call in apt))

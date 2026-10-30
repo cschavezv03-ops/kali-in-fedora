@@ -11,7 +11,7 @@ NAME=kali
 TAG=docker.io/kalilinux/kali-rolling:latest
 LABEL=io.github.kali-in-fedora.managed
 RESERVE=$((20 * 1024 * 1024 * 1024))
-MINIMUM=(ca-certificates curl iproute2 bind9-dnsutils)
+MINIMUM=(ca-certificates curl iproute2 bind9-dnsutils iputils-ping)
 CAPS=(CHOWN DAC_OVERRIDE FOWNER FSETID SETGID SETUID SETFCAP SYS_CHROOT)
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -31,7 +31,7 @@ Usage: ./kali.sh COMMAND
   update [--packages]  Apply fixes in place; optionally upgrade APT packages; restarts kali
   validate             Check security, HTTPS and persistence; restarts kali
   start | stop         Start or stop kali
-  shell                Enter Bash; exiting does not stop or remove kali
+  shell                Enter Bash with unprivileged Nmap defaults; exit keeps kali running
   status | logs        Show status or the last 100 main-process log entries
   inventory            Save installed versions to .state/packages.tsv
   plan [PROFILE]      Refresh APT indexes and estimate WITHOUT installing (default: cli)
@@ -185,15 +185,16 @@ start_container() {
 }
 
 ensure_no_active_work() {
-    pm top "$NAME" pid tty comm | python3 -c '
+    pm top "$NAME" pid state tty comm | python3 -c '
 import sys
 rows=sys.stdin.read().splitlines()
 if len(rows)<2: sys.exit("Cannot verify container processes; refusing to interrupt active work.")
 active=[]
 for row in rows[1:]:
- fields=row.split(None,2)
- if len(fields)!=3 or not fields[0].isdigit(): sys.exit("Unexpected Podman process list; refusing to interrupt active work.")
- if fields[0]!="1": active.append(f"PID {fields[0]} ({fields[2]})")
+ fields=row.split(None,3)
+ if len(fields)!=4 or not fields[0].isdigit(): sys.exit("Unexpected Podman process list; refusing to interrupt active work.")
+ # The sleep PID 1 does not reap children; zombies cannot be interrupted or do work.
+ if fields[0]!="1" and not fields[1].startswith("Z"): active.append(f"PID {fields[0]} ({fields[3]})")
 if active: sys.exit("Active Kali processes: "+", ".join(active)+". Close shells and services before an update or validation; nothing was stopped.")
 '
 }
@@ -219,14 +220,13 @@ apt_update() {
 }
 
 apt_plan() {
-    local profile=$1 rc=0
+    local profile=$1
     shift
     local raw="$STATE/plan-$profile.txt"
-    local recommend_flag=--no-install-recommends recommends=false
-    local apt_args=(--assume-no --no-remove)
+    local recommend_flag=--no-install-recommends
+    local apt_args=(--simulate --no-remove)
     if [[ "$profile" == everything-full ]]; then
         recommend_flag=--install-recommends
-        recommends=true
     fi
     if [[ "$profile" == upgrade ]]; then
         apt_args+=(upgrade)
@@ -234,31 +234,8 @@ apt_plan() {
         apt_args+=("$recommend_flag" install "$@")
     fi
     pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
-        apt-get "${apt_args[@]}" > "$raw" 2>&1 || rc=$?
-    [[ $rc == 0 || $rc == 1 ]] || { cat -- "$raw"; die 'APT could not resolve this profile; nothing was installed.'; }
-    python3 -c '
-import json,pathlib,re,sys
-text=pathlib.Path(sys.argv[1]).read_text()
-def amount(s):
-  s=s.replace(",","");m=re.fullmatch(r"([0-9.]+)\s*([kMGT]?B)",s.strip())
-  if not m: raise ValueError("Unrecognized APT size: "+s)
-  return int(float(m[1])*{"B":1,"kB":10**3,"MB":10**6,"GB":10**9,"TB":10**12}[m[2]])
-download=re.search(r"Need to get (.+?) of archives",text)
-installed=re.search(r"After this operation, ([0-9.,]+\s*[kMGT]?B) of additional disk space will be used",text)
-freed=re.search(r"After this operation, ([0-9.,]+\s*[kMGT]?B) disk space will be freed",text)
-unchanged=re.search(r"^0 upgraded, 0 newly installed, 0 to remove",text,re.M) is not None
-if not installed and not freed and not unchanged:
-  print(text);sys.exit("Could not obtain a reliable APT estimate; stopping.")
-d=amount(download[1].split("/")[-1]) if download else 0
-n=amount(installed[1]) if installed else 0
-budget=n+d+2*2**30
-result={"download_bytes":d,"additional_installed_bytes":n,"budget_bytes":budget,"reserve_bytes":20*2**30,"recommends":sys.argv[3]=="true"}
-pathlib.Path(sys.argv[2]).write_text(json.dumps(result,indent=2)+"\n")
-print(f"APT: download {d/2**30:.2f} GiB; additional installed size {n/2**30:.2f} GiB; budget including download and 2 GiB headroom: {budget/2**30:.2f} GiB")
-for l in text.splitlines():
- if "newly installed" in l or "upgraded," in l: print(l)
-print("Full dependency list is in the local, untracked plan report.")
-' "$raw" "$STATE/plan-$profile.json" "$recommends"
+        apt-get "${apt_args[@]}" > "$raw" 2>&1 || { cat -- "$raw"; die 'APT simulation failed; nothing was installed by the plan.'; }
+    python3 "$ROOT/lib/apt_plan.py" "$raw" "$STATE/plan-$profile.json" "$profile"
 }
 
 inventory() {
@@ -278,12 +255,17 @@ validate() {
         printf "Kali: %s\n" "$PRETTY_NAME"
         apt-get --version | head -n 1
         test -z "$(dpkg --audit)"
-        for p in ca-certificates curl iproute2 bind9-dnsutils; do
+        for p in ca-certificates curl iproute2 bind9-dnsutils iputils-ping; do
             test "$(dpkg-query -W -f="\${Status}" "$p")" = "install ok installed"
         done
         curl --fail --silent --show-error --location --connect-timeout 15 --max-time 60 --output /dev/null https://www.kali.org/
         printf "External HTTPS and DNS resolution: OK\n"
         ip -brief link show lo
+        if ping -n -c 1 -W 2 127.0.0.1 >/dev/null 2>&1; then
+            printf "ICMP ping to loopback: OK\n"
+        else
+            printf "ICMP ping to loopback unavailable; check rootless network/kernel permissions.\n"
+        fi
         test -n "$(dig +short www.kali.org A)"
         test "$(id -u)" = 0
         grep -q "^NoNewPrivs:[[:space:]]*1" /proc/self/status
@@ -309,7 +291,7 @@ print("Verified from Fedora: container UID 0 maps to the unprivileged Fedora use
     [[ $(cat -- "$LAB/$shared") == "$token" && $(stat -c %u "$LAB/$shared") == "$EUID" && $(stat -c %a "$LAB/$shared") == 600 ]] || die 'Shared files do not have the expected owner and permissions.'
     run pm stop --time 10 "$NAME"
     run pm start "$NAME"
-    pm exec "$NAME" bash -ceu 'test "$(cat -- "$2")" = "$1"; test "$(cat -- "/lab/$3")" = "$1"; for p in ca-certificates curl iproute2 bind9-dnsutils; do dpkg-query -W "$p"; done' bash "$token" "$inside" "$shared"
+    pm exec "$NAME" bash -ceu 'test "$(cat -- "$2")" = "$1"; test "$(cat -- "/lab/$3")" = "$1"; for p in ca-certificates curl iproute2 bind9-dnsutils iputils-ping; do dpkg-query -W "$p"; done' bash "$token" "$inside" "$shared"
     # Only files created by this validation are removed, inside the container.
     pm exec "$NAME" bash -ceu 'test "$(cat -- "$2")" = "$1"; test "$(cat -- "/lab/$3")" = "$1"; unlink -- "$2"; unlink -- "/lab/$3"' bash "$token" "$inside" "$shared"
     inventory
@@ -319,7 +301,7 @@ print("Verified from Fedora: container UID 0 maps to the unprivileged Fedora use
 }
 
 setup() {
-    note 'Minimum mode: only four basic Kali packages and their required dependencies; no broad tool metapackage'
+    note 'Minimum mode: five basic Kali packages and their required dependencies; no broad tool metapackage'
     printf 'Pinned official image; persistent kali; only lab/:Z mounted; pasta network; no published ports; keep 20 GiB free.\n'
     note 'Checking existing rootless Podman (host packages are not installed automatically)'
     prerequisites
@@ -351,7 +333,7 @@ setup() {
     local budget
     budget=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["budget_bytes"])' "$STATE/plan-minimum.json")
     check_space "$budget"
-    note 'Installing Minimum inside Kali (ca-certificates, curl, iproute2, bind9-dnsutils)'
+    note 'Installing Minimum inside Kali (ca-certificates, curl, iproute2, bind9-dnsutils, iputils-ping)'
     run pm exec --env LC_ALL=C --env DEBIAN_FRONTEND=noninteractive "$NAME" \
         apt-get --yes --no-remove --no-install-recommends install "${MINIMUM[@]}"
     apply_container_fixes
@@ -513,7 +495,7 @@ case "$command" in
     validate) private_dir "$STATE"; validate 2>&1 | tee "$STATE/validate-$(date -u +%Y%m%dT%H%M%SZ).log";;
     start) require_managed; start_container;;
     stop) require_managed; run pm stop --time 10 "$NAME";;
-    shell) require_managed; start_container; pm exec -it --workdir /lab "$NAME" bash -c 'umask 077; exec bash -i';;
+    shell) require_managed; start_container; pm exec -it --env NMAP_UNPRIVILEGED=1 --workdir /lab "$NAME" bash -c 'umask 077; exec bash -i';;
     status) require_managed; pm inspect --format 'Status={{.State.Status}} Image={{.ImageName}} ID={{.Id}}' "$NAME"; check_space;;
     logs) require_managed; pm logs --tail 100 "$NAME";;
     inventory) require_managed; start_container; inventory;;
