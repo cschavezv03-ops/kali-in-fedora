@@ -16,6 +16,12 @@ The active Fedora VPN had not been imported with `htb.sh`, so `./htb.sh status` 
 
 Testing `apt-get --assume-no ... install iputils-ping` exposed a planning bug: APT installed this small package without prompting. The plan path now uses **`apt-get --simulate`** instead and budgets from candidate package metadata; a simulation of an uninstalled package and `./kali.sh plan everything-full` were checked without installing it. The `sleep` PID 1 does not reap child processes, so `podman top` can show zombies after APT operations; the active-work guard skips zombie processes but still refuses to restart for live shells or services.
 
+## Burp virtual GUI check (October 2026)
+
+Burp was installed, and a basic Swing component initialized under Java 25, but launching Burp without `DISPLAY` produced repeated `no ComponentUI` errors. Running it under `xvfb-run` continued without those errors. A direct attempt to relay Fedora's X11 Unix socket through `lab/` was denied by SELinux even when the temporary socket had the private container label; the temporary socket and auth file were removed. The project does **not** disable SELinux or use `xhost +`.
+
+The optional `./burp.sh --check` successfully started a temporary virtual display in Kali, verified that its VNC service was bound to guest loopback, relayed its RFB handshake through a Fedora-loopback-only listener, and cleaned up. In a timed test `./burp.sh` started Burp in that virtual display without Java/Swing errors and stopped it cleanly on Ctrl+C. No Fedora display socket was mounted, no Podman port was published, and Kali's container ID was unchanged. A human VNC viewer session and browser proxy interception have **not** been validated here; they require user interaction and separate setup.
+
 ## Installation observed
 
 The persistent `kali` container used the official base image pinned in `image.lock` and installed `kali-linux-everything` with APT recommendations (`./kali.sh install everything-full`). The metapackage version was `2026.4.2`; 4,315 packages were installed. The writable container layer was about 37.25 GiB. The preceding plan estimated 4,192 new packages, 12.76 GiB of downloads and 36.23 GiB of additional installed size. The base image was about 239 MiB. These numbers can change considerably with Kali Rolling, architecture, filesystems, snapshots and APT updates. Check your own `plan everything-full` and available storage before installation. The installer requires at least 20 GiB to remain free after its estimated budget.

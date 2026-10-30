@@ -66,6 +66,17 @@ Other profiles are optional:
 
 Installed does not mean ready to use: graphical applications need a display, services/databases need their own setup, and some tools need accounts or API keys. `nmap --unprivileged -sT` supports TCP connect scanning; SYN scanning, raw sockets and live packet capture are restricted. Wi-Fi monitor/injection, Bluetooth, SDR, USB and GPU need additional access not provided here. Use tools only for authorized targets. See [Kali metapackages](https://www.kali.org/docs/general-use/metapackages/) and [Podman run options](https://docs.podman.io/en/latest/markdown/podman-run.1.html).
 
+## Optional Burp GUI in Kali
+
+`burpsuite` is a Java desktop application. The normal Kali shell intentionally has no Fedora display or session sockets: without a display, Burp may emit long Swing `no ComponentUI` errors. Java 25 may also print deprecation warnings that are not fatal. The optional `./burp.sh` uses Kali's `Xtightvnc` virtual X display instead of sharing Fedora X11/Wayland. Its VNC listener binds **only** to `127.0.0.1` inside Kali; a binary relay opened through `podman exec` binds **only** to `127.0.0.1` on Fedora. There are no Podman published ports, new mounts, devices or privileges. A random 8-character VNC password (TightVNC's effective limit) lives only in a new mode-0700 directory under the already-private `lab/`; the launcher removes it on exit. Anyone who can access the host user's local processes or rootless container is still trusted with this session. This is an opt-in GUI, not an isolation boundary for untrusted applications.
+
+```bash
+./burp.sh --check  # Briefly verify the private VNC bridge without starting Burp
+./burp.sh          # Run Burp inside Kali and keep this Fedora terminal open
+```
+
+Use Fedora GNOME Connections (or another VNC viewer) to add the printed `vnc://127.0.0.1:PORT` and temporary password. Close Burp or Ctrl+C in the launcher terminal to stop only the GUI session; Kali and the Fedora VPN continue running. Requires Kali `burpsuite`, `tightvncserver`, `socat`, `ss` and Java plus a Fedora VNC viewer. `./burp.sh` checks them and does not install packages or change host configuration. If missing, install host prerequisites yourself and explicitly add needed Kali packages after reviewing their APT plan. Do not confuse the VNC relay with the Burp HTTP proxy: Fedora browsers cannot use a proxy bound to Kali's loopback without a separately reviewed forwarding mechanism. The GUI bridge does not give Burp access to Fedora's X11/Wayland sockets or make host browsers trust its CA certificate. A VNC viewer may share clipboard content; disable that feature in the viewer if needed.
+
 ## Backup, recovery and removal
 
 Stop the container and back up the internal layer and `lab/` separately; `podman export` **does not include bind-mounted `lab/`**. Exports can contain secrets. For example, from the repository directory, choose a new backup identifier rather than overwriting existing files:

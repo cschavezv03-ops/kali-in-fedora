@@ -96,7 +96,18 @@ To permanently remove the container, back up anything you need **first**, then r
 
 ## Boundaries and optional VPN support
 
-Inside Kali you appear as root for package management, **not** as Fedora's root user. `/lab` maps to this repository's `lab/` with private permissions; edits and deletions there affect both sides. There are no published ports or extra devices, no desktop integration, and no automatic `systemd` services. The container has outbound networking (including potentially reachable LAN hosts), but no `NET_RAW` or `NET_ADMIN`; SYN scans, live capture, Wi-Fi injection, and hardware-dependent tools may not work. Installing Everything does not automatically configure GUIs, services, accounts, or hardware. Use tools only on authorized targets. See the [technical guide](docs/technical-guide.md) for isolation, plans, and limitations.
+Inside Kali you appear as root for package management, **not** as Fedora's root user. `/lab` maps to this repository's `lab/` with private permissions; edits and deletions there affect both sides. There are no published ports or extra devices, no desktop integration by default, and no automatic `systemd` services. The container has outbound networking (including potentially reachable LAN hosts), but no `NET_RAW` or `NET_ADMIN`; SYN scans, live capture, Wi-Fi injection, and hardware-dependent tools may not work. Installing Everything does not automatically configure GUIs, services, accounts, or hardware. Use tools only on authorized targets. See the [technical guide](docs/technical-guide.md) for isolation, plans, and limitations.
+
+### Optional Burp Suite GUI inside Kali
+
+Burp needs a display; running `burpsuite` in the normal Kali shell produces Java/Swing errors because that shell has no Fedora display. **Do not disable SELinux or share Fedora's X11/Wayland socket to fix this.** On a graphical Fedora session, start the optional isolated GUI from the repository directory:
+
+```bash
+./burp.sh --check  # Optional: test the virtual display and local relay, then clean up
+./burp.sh          # Start Burp inside Kali; keep this terminal open
+```
+
+In **Fedora GNOME Connections**, add the `vnc://127.0.0.1:PORT` address printed by `burp.sh` and enter its temporary 8-character password. Close Burp (or press Ctrl+C in the Fedora terminal) to stop the temporary virtual display and remove the credential. `./burp.sh` needs `burpsuite`, `tightvncserver`, `socat` and Java **inside Kali**, and a VNC viewer such as `gnome-connections` **on Fedora**. It does not install missing packages automatically. It uses only guest and host loopback, the existing private `lab/` mount and a random VNC password; it does **not** recreate Kali, publish a port, alter the VPN, or give Kali access to Fedora's desktop. The Burp proxy is inside Kali; this GUI relay does **not** expose it to Fedora browsers. See [GUI security and troubleshooting](docs/technical-guide.md#optional-burp-gui-in-kali).
 
 `./kali.sh shell` sets `NMAP_UNPRIVILEGED=1` for that shell so ordinary Nmap commands use unprivileged TCP connect by default; for a target that does not answer discovery probes, use `nmap --unprivileged -sT -Pn -p 22,80 TARGET_IP`. Existing open shells need `export NMAP_UNPRIVILEGED=1` or a new `./kali.sh shell`. Raw SYN/UDP scans (`-sS`, `-sU`) still require privileges not provided here. `iputils-ping` supplies `ping`, but ICMP beyond loopback depends on the host kernel, VPN and rootless network; a failed ping does not prove a TCP service is unreachable. `htb.sh` controls only VPN profiles imported with `./htb.sh import`; a different Fedora VPN can be active without appearing in `./htb.sh status`.
 
