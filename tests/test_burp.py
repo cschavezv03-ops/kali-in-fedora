@@ -15,6 +15,12 @@ class BurpGuiTests(unittest.TestCase):
         result = subprocess.run([str(burp.ROOT / "burp.sh"), "--help"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn("--check", result.stdout)
+        self.assertIn("--proxy", result.stdout)
+
+    def test_check_and_proxy_cannot_be_combined(self):
+        result = subprocess.run([str(burp.ROOT / "burp.sh"), "--check", "--proxy"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--check only tests the GUI", result.stderr)
 
     def test_pid_file_symlinks_and_invalid_pids_cannot_be_used_for_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(burp, "guest") as guest:
@@ -32,14 +38,15 @@ class BurpGuiTests(unittest.TestCase):
             burp.stop_guest(Path(tmp) / "vnc.pid", "Xtightvnc")
             guest.assert_not_called()
 
-    def test_relay_connects_only_to_kali_loopback(self):
+    def test_relays_connect_only_to_kali_loopback(self):
         client, peer = socket.socketpair()
         try:
-            with patch.object(burp, "relay_connection") as relay:
-                burp.make_handler(5999)(peer, ("127.0.0.1", 1), object())
-                command = relay.call_args.args[1]
-                self.assertEqual(command, ["podman", "--remote=false", "exec", "-i", "kali",
-                                           "socat", "STDIO", "TCP4:127.0.0.1:5999"])
+            for port in (5999, 8080):
+                with patch.object(burp, "relay_connection") as relay:
+                    burp.make_handler(port)(peer, ("127.0.0.1", 1), object())
+                    command = relay.call_args.args[1]
+                    self.assertEqual(command, ["podman", "--remote=false", "exec", "-i", "kali",
+                                               "socat", "STDIO", f"TCP4:127.0.0.1:{port}"])
         finally:
             client.close()
             peer.close()

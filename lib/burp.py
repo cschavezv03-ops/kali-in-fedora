@@ -64,7 +64,7 @@ class Relay(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        print("A local VNC connection ended unexpectedly.", file=sys.stderr)
+        print("A local GUI or proxy connection ended unexpectedly.", file=sys.stderr)
 
 
 def make_handler(port):
@@ -150,7 +150,10 @@ def start_burp(directory):
 def main():
     parser = argparse.ArgumentParser(prog="./burp.sh", description="Run Burp inside Kali using a private virtual display and Fedora-local VNC viewer.")
     parser.add_argument("--check", action="store_true", help="test the isolated VNC bridge without starting Burp")
+    parser.add_argument("--proxy", action="store_true", help="optionally relay Burp's guest-loopback HTTP proxy to Fedora loopback")
     args = parser.parse_args()
+    if args.check and args.proxy:
+        parser.error("--check only tests the GUI; use --proxy when starting Burp")
     os.umask(0o077)
     state = ROOT / ".state"
     lab = ROOT / "lab"
@@ -173,7 +176,7 @@ def main():
         ensure_requirements()
         password = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
         directory = Path(tempfile.mkdtemp(prefix=".burp-gui-", dir=lab))
-        server = thread = proc = None
+        server = thread = proxy_server = proxy_thread = proc = None
         try:
             start_display(directory, password)
             server = Relay(("127.0.0.1", 0), make_handler(VNC_PORT))
@@ -184,10 +187,19 @@ def main():
                 print("Kali's virtual display and Fedora-local VNC relay work; no Burp session was left running.")
                 return
             proc = start_burp(directory)
+            if args.proxy:
+                proxy_server = Relay(("127.0.0.1", 0), make_handler(8080))
+                proxy_thread = threading.Thread(target=proxy_server.serve_forever, daemon=True)
+                proxy_thread.start()
             print("Burp is running inside Kali on a virtual display (no Fedora X11/Wayland socket shared).", flush=True)
             print("In Fedora GNOME Connections, add VNC address: "
                   f"vnc://127.0.0.1:{server.server_address[1]}", flush=True)
             print(f"Temporary VNC password (8 characters): {password}", flush=True)
+            if proxy_server:
+                print("Optional Fedora browser HTTP/HTTPS proxy: "
+                      f"127.0.0.1:{proxy_server.server_address[1]}", flush=True)
+                print("First finish Burp's setup wizard and confirm its Proxy listener is enabled on 127.0.0.1:8080 inside Kali.", flush=True)
+                print("Configure only your chosen browser; no global Fedora proxy or CA trust was changed.", flush=True)
             print("Keep this terminal open. Close Burp or press Ctrl+C to end the session and remove its credentials.", flush=True)
             proc.wait()
             if proc.returncode:
@@ -207,6 +219,11 @@ def main():
                 server.server_close()
             if thread:
                 thread.join(timeout=3)
+            if proxy_server:
+                proxy_server.shutdown()
+                proxy_server.server_close()
+            if proxy_thread:
+                proxy_thread.join(timeout=3)
             stop_guest(directory / "vnc.pid", "Xtightvnc")
             for name in ("passwd", "burp.log", "burp.pid", "vnc.pid"):
                 path = directory / name
